@@ -41,8 +41,10 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Incorrect username or password' });
     }
 
-    // Compare entered password with password in database (supports bcrypt hash or plain text)
+    // Compare entered password with password in database (supports bcrypt hash, automatically upgrades plain text)
     let passwordMatched = false;
+    let needsUpgradeToBcrypt = false;
+
     if (
       typeof storedPassword === 'string' &&
       (storedPassword.startsWith('$2a$') ||
@@ -51,11 +53,25 @@ router.post('/login', async (req, res) => {
     ) {
       passwordMatched = await bcrypt.compare(password, storedPassword);
     } else {
+      // Legacy plain text check
       passwordMatched = (password === storedPassword);
+      if (passwordMatched) {
+        needsUpgradeToBcrypt = true;
+      }
     }
 
     if (!passwordMatched) {
       return res.status(401).json({ error: 'Incorrect username or password' });
+    }
+
+    // Automatically upgrade legacy plain text password to bcrypt
+    if (needsUpgradeToBcrypt) {
+      try {
+        const upgradedHash = await bcrypt.hash(password, 10);
+        await pool.query('UPDATE users SET password = ? WHERE id = ?', [upgradedHash, user.id]);
+      } catch (err) {
+        console.warn('Could not upgrade password hash:', err.message);
+      }
     }
 
     // Generate JWT Token
@@ -72,13 +88,14 @@ router.post('/login', async (req, res) => {
       httpOnly: true,
       secure: isProd,
       sameSite: isProd ? 'none' : 'lax',
+      path: '/',
       maxAge: 14 * 24 * 60 * 60 * 1000,
     });
 
+    // Secure response: do NOT return JWT token in JSON response
     return res.status(200).json({
       message: 'Logged in successfully',
       user: tokenPayload,
-      token,
     });
 
   } catch (err) {
@@ -97,6 +114,7 @@ router.post('/logout', (req, res) => {
       httpOnly: true,
       secure: isProd,
       sameSite: isProd ? 'none' : 'lax',
+      path: '/',
     });
     return res.status(200).json({ message: 'Logged out successfully' });
   } catch (err) {
@@ -176,13 +194,13 @@ async function handleChangePassword(req, res) {
       httpOnly: true,
       secure: isProd,
       sameSite: isProd ? 'none' : 'lax',
+      path: '/',
       maxAge: 14 * 24 * 60 * 60 * 1000,
     });
 
     return res.status(200).json({
       message: 'Password updated successfully!',
       user: tokenPayload,
-      token,
     });
 
   } catch (err) {

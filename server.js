@@ -20,18 +20,23 @@ const PORT = process.env.PORT || 3000;
 // Serve uploaded static files from persistent upload directory (/uploads)
 app.use('/uploads', express.static(getUploadDir()));
 
-// CORS configuration supporting credentials (cookies / authorization header)
+// CORS configuration supporting credentials (cookies)
 const allowedOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
-  : ['http://localhost:3000', 'http://localhost:3001', 'https://dossier.vercel.app', 'https://app.kumarda.com'];
+  : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'];
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      callback(null, true); // Allow during development & cross-domain previews
+    // allow requests with no origin (like mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
     }
+    // In development mode, allow localhost and 127.0.0.1 on any port
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
