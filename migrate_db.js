@@ -91,6 +91,35 @@ async function migrate() {
     console.error('Error updating sources indexes:', e.message);
   }
 
+  // 7. Ensure users table columns exist for registration (email, mobile_no, name, full_name)
+  try {
+    const [colsEmail] = await pool.query("SHOW COLUMNS FROM users LIKE 'email'");
+    if (colsEmail.length === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN email varchar(255) DEFAULT NULL');
+      console.log('Added email column to users.');
+    }
+
+    const [colsMobile] = await pool.query("SHOW COLUMNS FROM users LIKE 'mobile_no'");
+    if (colsMobile.length === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN mobile_no varchar(50) DEFAULT NULL');
+      console.log('Added mobile_no column to users.');
+    }
+
+    const [colsName] = await pool.query("SHOW COLUMNS FROM users LIKE 'name'");
+    if (colsName.length === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN name varchar(255) DEFAULT NULL');
+      console.log('Added name column to users.');
+    }
+
+    const [colsFullName] = await pool.query("SHOW COLUMNS FROM users LIKE 'full_name'");
+    if (colsFullName.length === 0) {
+      await pool.query('ALTER TABLE users ADD COLUMN full_name varchar(255) DEFAULT NULL');
+      console.log('Added full_name column to users.');
+    }
+  } catch (e) {
+    console.error('Error updating users columns:', e.message);
+  }
+
   console.log('Migration finished successfully!');
   process.exit(0);
 }

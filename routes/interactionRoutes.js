@@ -48,14 +48,25 @@ router.put('/:id', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Interaction not found' });
     }
 
-    const validFollowUpDate = follow_up_date ? new Date(follow_up_date) : null;
+    let validFollowUpDate = null;
+    if (follow_up_date) {
+      const d = new Date(follow_up_date);
+      if (!isNaN(d.getTime())) validFollowUpDate = d;
+    }
+
+    let validOccurredAt = new Date();
+    if (occurred_at) {
+      const d = new Date(occurred_at);
+      if (!isNaN(d.getTime())) validOccurredAt = d;
+    }
+
     const validFollowUpStatus = ['pending', 'completed', 'cancelled', 'none'].includes(follow_up_status)
       ? follow_up_status
-      : (follow_up_date ? 'pending' : 'none');
+      : (validFollowUpDate ? 'pending' : 'none');
 
     const updateFields = {
       interaction_type: interaction_type || 'Note',
-      occurred_at: occurred_at ? new Date(occurred_at) : new Date(),
+      occurred_at: validOccurredAt,
       subject: subject !== undefined ? (subject?.trim() || null) : undefined,
       details: details !== undefined ? (details?.trim() || null) : undefined,
       follow_up_date: validFollowUpDate,

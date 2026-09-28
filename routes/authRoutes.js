@@ -10,6 +10,115 @@ const {
   requireAuth,
 } = require('../middleware/authMiddleware');
 
+// Helper function to ensure columns exist in users table
+async function ensureUserColumnsExist(pool) {
+  const columnsToAdd = [
+    { col: 'username', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'email', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'mobile_no', spec: 'VARCHAR(50) DEFAULT NULL' },
+    { col: 'full_name', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'name', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'password', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'password_hash', spec: 'VARCHAR(255) DEFAULT NULL' },
+  ];
+
+  for (const { col, spec } of columnsToAdd) {
+    try {
+      const [rows] = await pool.query(`SHOW COLUMNS FROM users LIKE '${col}'`);
+      if (!rows || rows.length === 0) {
+        await pool.query(`ALTER TABLE users ADD COLUMN ${col} ${spec}`);
+      }
+    } catch (e) {
+      // Ignore if column check fails
+    }
+  }
+}
+
+// ======================================================
+// POST /api/v1/auth/register
+// ======================================================
+router.post('/register', async (req, res) => {
+  try {
+    const { username, name, email, mobile, mobile_no, password } = req.body;
+    const rawMobile = mobile_no || mobile || '';
+
+    const trimmedUsername = (username || '').trim();
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedMobile = rawMobile.trim();
+    const trimmedName = (name || trimmedUsername || trimmedEmail).trim();
+
+    if (!trimmedUsername) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+    if (!trimmedEmail) {
+      return res.status(400).json({ error: 'Email address is required' });
+    }
+    if (!trimmedMobile) {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+    if (!password || password.trim().length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters long' });
+    }
+
+    const pool = getPool();
+    await ensureUserColumnsExist(pool);
+
+    // Check if user with this username or email already exists
+    const [existing] = await pool.query(
+      'SELECT id, username, email FROM users WHERE username = ? OR email = ? LIMIT 1',
+      [trimmedUsername, trimmedEmail]
+    );
+
+    if (existing && existing.length > 0) {
+      if (existing[0].username === trimmedUsername) {
+        return res.status(400).json({ error: 'A user with this username already exists' });
+      }
+      return res.status(400).json({ error: 'A user with this email address already exists' });
+    }
+
+    // Hash password with bcrypt
+    const passwordHash = await bcrypt.hash(password.trim(), 10);
+
+    // Insert new user into MySQL users table
+    const [insertRes] = await pool.query(
+      `INSERT INTO users (username, name, full_name, email, mobile_no, password, password_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [trimmedUsername, trimmedName, trimmedName, trimmedEmail, trimmedMobile, passwordHash, passwordHash]
+    );
+
+    const userId = insertRes.insertId;
+
+    // Generate JWT Session Token
+    const tokenPayload = {
+      id: userId,
+      username: trimmedUsername,
+      full_name: trimmedName,
+      email: trimmedEmail,
+    };
+
+    const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
+
+    // Store token in HTTP-Only Cookie
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+      maxAge: 14 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(201).json({
+      message: 'Registered and logged in successfully',
+      user: tokenPayload,
+    });
+
+  } catch (err) {
+    console.error('Registration error:', err);
+    return res.status(500).json({ error: err.message || 'Server error during registration' });
+  }
+});
+
 // ======================================================
 // POST /api/v1/auth/login
 // ======================================================
@@ -18,16 +127,17 @@ router.post('/login', async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.status(400).json({ error: 'Username and password are required' });
+      return res.status(400).json({ error: 'Username/Email and password are required' });
     }
 
     const trimmedUsername = username.trim();
     const pool = getPool();
+    await ensureUserColumnsExist(pool);
 
-    // Query user strictly from MySQL users table
+    // Query user from MySQL users table by username OR email
     const [rows] = await pool.query(
-      'SELECT * FROM users WHERE username = ? LIMIT 1',
-      [trimmedUsername]
+      'SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1',
+      [trimmedUsername, trimmedUsername.toLowerCase()]
     );
 
     if (!rows || rows.length === 0) {

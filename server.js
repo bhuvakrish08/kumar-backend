@@ -93,3 +93,5 @@ app.listen(PORT, () => {
   console.log(`📍 Health check available at http://localhost:${PORT}/health`);
   console.log(`🌐 API Base URL: http://localhost:${PORT}/api/v1`);
 });
+
+module.exports = app;

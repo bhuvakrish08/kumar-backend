@@ -89,6 +89,31 @@ async function runTests() {
 
   try {
     // ---------------------------------------------------------------
+    // TEST 0: User Registration with username, email, mobile_no, password
+    // ---------------------------------------------------------------
+    console.log('0️⃣ Testing User Registration with username, email, mobile_no & password...');
+    const regUsername = `reguser_${Date.now()}`;
+    const regRes = await request(server, 'POST', '/api/v1/auth/register', {}, {
+      username: regUsername,
+      email: `${regUsername}@example.com`,
+      mobile_no: '+1-555-0199',
+      password: 'password123',
+      name: 'Registration Test User'
+    });
+
+    if (regRes.statusCode !== 201) {
+      throw new Error(`Registration failed with status ${regRes.statusCode}: ${JSON.stringify(regRes.body)}`);
+    }
+    const regCookie = parseCookie(regRes.cookies, cookieName);
+    if (!regCookie) {
+      throw new Error(`FAILED: ${cookieName} cookie not set on registration response!`);
+    }
+    if (!regRes.body.user || regRes.body.user.username !== regUsername) {
+      throw new Error(`FAILED: Registration returned invalid user object: ${JSON.stringify(regRes.body)}`);
+    }
+    console.log(`   ✅ User ${regUsername} registered successfully, issued HttpOnly cookie & user object.\n`);
+
+    // ---------------------------------------------------------------
     // TEST 1: Login kumar & verify secure HttpOnly cookie (no JWT in JSON)
     // ---------------------------------------------------------------
     console.log('1️⃣ Testing Secure Login for User kumar...');
@@ -324,6 +349,40 @@ async function runTests() {
       throw new Error(`FAILED: testuser sees ${testUserSources.body.length} sources! Expected 0.`);
     }
     console.log('   ✅ testuser has 0 sources (User A sources completely isolated from User B).');
+
+    // ---------------------------------------------------------------
+    // TEST 8: Source Management Module (Create, Rename, Delete)
+    // ---------------------------------------------------------------
+    console.log('\n8️⃣ Testing Source Tag CRUD (Create, Rename, Delete)...');
+    
+    // Create new source tag
+    const createSrc = await request(server, 'POST', '/api/v1/sources', authHeadersKumar, { name: 'VIP Investor' });
+    if (createSrc.statusCode !== 201) {
+      throw new Error(`FAILED to create source tag: ${JSON.stringify(createSrc.body)}`);
+    }
+    const newSrcId = createSrc.body.id;
+    console.log(`   ✅ Source tag created (ID: ${newSrcId}, Name: "${createSrc.body.name}")`);
+
+    // Duplicate create should fail
+    const dupSrc = await request(server, 'POST', '/api/v1/sources', authHeadersKumar, { name: 'vip investor' });
+    if (dupSrc.statusCode !== 400) {
+      throw new Error(`FAILED: Duplicate source creation returned ${dupSrc.statusCode} instead of 400`);
+    }
+    console.log(`   ✅ Duplicate source creation blocked: ${dupSrc.body.error}`);
+
+    // Update source name
+    const updateSrc = await request(server, 'PUT', `/api/v1/sources/${newSrcId}`, authHeadersKumar, { name: 'Strategic Partner' });
+    if (updateSrc.statusCode !== 200 || updateSrc.body.name !== 'Strategic Partner') {
+      throw new Error(`FAILED to update source name: ${JSON.stringify(updateSrc.body)}`);
+    }
+    console.log(`   ✅ Source tag renamed to "${updateSrc.body.name}"`);
+
+    // Delete source tag
+    const delSrc = await request(server, 'DELETE', `/api/v1/sources/${newSrcId}`, authHeadersKumar);
+    if (delSrc.statusCode !== 200) {
+      throw new Error(`FAILED to delete source tag: ${JSON.stringify(delSrc.body)}`);
+    }
+    console.log(`   ✅ Source tag deleted successfully.`);
 
     console.log('\n🎉 ALL SECURITY & FUNCTIONALITY TESTS PASSED SUCCESSFULLY! 🎉\n');
   } finally {
