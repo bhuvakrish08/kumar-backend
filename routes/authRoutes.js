@@ -56,8 +56,8 @@ router.post('/register', async (req, res) => {
     if (!trimmedMobile) {
       return res.status(400).json({ error: 'Mobile number is required' });
     }
-    if (!password || password.trim().length < 4) {
-      return res.status(400).json({ error: 'Password must be at least 4 characters long' });
+    if (!password || password.trim().length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long' });
     }
 
     const pool = getPool();
@@ -151,37 +151,11 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Incorrect username or password' });
     }
 
-    // Compare entered password with password in database (supports bcrypt hash, automatically upgrades plain text)
-    let passwordMatched = false;
-    let needsUpgradeToBcrypt = false;
-
-    if (
-      typeof storedPassword === 'string' &&
-      (storedPassword.startsWith('$2a$') ||
-       storedPassword.startsWith('$2b$') ||
-       storedPassword.startsWith('$2y$'))
-    ) {
-      passwordMatched = await bcrypt.compare(password, storedPassword);
-    } else {
-      // Legacy plain text check
-      passwordMatched = (password === storedPassword);
-      if (passwordMatched) {
-        needsUpgradeToBcrypt = true;
-      }
-    }
+    // Compare entered password with bcrypt hash in database (strictly bcrypt, no plaintext fallbacks)
+    const passwordMatched = await bcrypt.compare(password, storedPassword);
 
     if (!passwordMatched) {
       return res.status(401).json({ error: 'Incorrect username or password' });
-    }
-
-    // Automatically upgrade legacy plain text password to bcrypt
-    if (needsUpgradeToBcrypt) {
-      try {
-        const upgradedHash = await bcrypt.hash(password, 10);
-        await pool.query('UPDATE users SET password = ? WHERE id = ?', [upgradedHash, user.id]);
-      } catch (err) {
-        console.warn('Could not upgrade password hash:', err.message);
-      }
     }
 
     // Generate JWT Token
@@ -251,8 +225,8 @@ async function handleChangePassword(req, res) {
     }
 
     const trimmedPassword = newPassword.trim();
-    if (trimmedPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+    if (trimmedPassword.length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long' });
     }
 
     const userId = req.user.id;
@@ -477,8 +451,8 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Email and OTP code are required.' });
     }
 
-    if (!trimmedPassword || trimmedPassword.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    if (!trimmedPassword || trimmedPassword.length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long.' });
     }
 
     const pool = getPool();

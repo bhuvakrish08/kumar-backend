@@ -13,11 +13,10 @@ router.get('/', requireAuth, async (req, res) => {
         CONCAT_WS(' ', c1.first_name, c1.last_name) AS contact_name,
         CONCAT_WS(' ', c2.first_name, c2.last_name) AS linked_contact_name
        FROM relationships r
-       JOIN contacts c1 ON c1.id = r.contact_id AND c1.created_by = ?
-       LEFT JOIN contacts c2 ON c2.id = r.related_contact_id AND c2.created_by = ?
-       WHERE r.created_by = ?
+       JOIN contacts c1 ON c1.id = r.contact_id AND c1.owner_user_id = ?
+       LEFT JOIN contacts c2 ON c2.id = r.related_contact_id AND c2.owner_user_id = ?
        ORDER BY r.created_at DESC LIMIT 500`,
-      [userId, userId, userId]
+      [userId, userId]
     );
     return res.json(rows);
   } catch (err) {
@@ -36,13 +35,13 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
 
     const pool = getPool();
-    // Verify relationship belongs to authenticated user
+    // Verify relationship belongs to authenticated user's contact
     const [existing] = await pool.query(
       `SELECT r.id FROM relationships r
        JOIN contacts c ON c.id = r.contact_id
-       WHERE r.id = ? AND (r.created_by = ? OR c.created_by = ?) AND c.created_by = ?
+       WHERE r.id = ? AND c.owner_user_id = ?
        LIMIT 1`,
-      [id, userId, userId, userId]
+      [id, userId]
     );
 
     if (!existing || existing.length === 0) {

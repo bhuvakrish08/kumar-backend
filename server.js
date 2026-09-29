@@ -3,6 +3,14 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 
+// Validate mandatory environment variables at startup
+if (!process.env.SESSION_SECRET) {
+  console.error('FATAL CONFIGURATION ERROR: SESSION_SECRET environment variable is missing!');
+  if (require.main === module) {
+    process.exit(1);
+  }
+}
+
 const path = require('path');
 
 const authRoutes = require('./routes/authRoutes');
@@ -40,7 +48,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'X-Requested-With']
 }));
 
 // Body & Cookie Parsers

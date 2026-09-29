@@ -10,7 +10,7 @@ async function getContactSources(pool, contactId, userId) {
   const [rows] = await pool.query(
     `SELECT s.id, s.name FROM sources s
      JOIN contact_sources cs ON cs.source_id = s.id
-     WHERE cs.contact_id = ? AND s.created_by = ?
+     WHERE cs.contact_id = ? AND s.owner_user_id = ?
      ORDER BY s.name`,
     [contactId, userId]
   );
@@ -28,14 +28,14 @@ router.get('/', requireAuth, async (req, res) => {
     let query = `
       SELECT c.*,
         GROUP_CONCAT(DISTINCT s.name ORDER BY s.name SEPARATOR ', ') AS source_names,
-        (SELECT MAX(i.occurred_at) FROM interactions i WHERE i.contact_id = c.id AND i.created_by = ?) AS last_contact
+        (SELECT MAX(i.occurred_at) FROM interactions i JOIN contacts c_int ON c_int.id = i.contact_id WHERE i.contact_id = c.id AND c_int.owner_user_id = ?) AS last_contact
       FROM contacts c
       LEFT JOIN contact_sources cs ON cs.contact_id = c.id
-      LEFT JOIN sources s ON s.id = cs.source_id AND s.created_by = ?
+      LEFT JOIN sources s ON s.id = cs.source_id AND s.owner_user_id = ?
     `;
 
     const params = [userId, userId];
-    const whereClauses = ['c.created_by = ?'];
+    const whereClauses = ['c.owner_user_id = ?'];
     params.push(userId);
 
     if (q) {
@@ -76,9 +76,9 @@ router.get('/:id', requireAuth, async (req, res) => {
     }
 
     const pool = getPool();
-    // Strictly filter by ID AND created_by to prevent IDOR
+    // Strictly filter by ID AND owner_user_id to prevent IDOR
     const [rows] = await pool.query(
-      'SELECT * FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+      'SELECT * FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
       [id, userId]
     );
     const contact = rows[0];
@@ -90,22 +90,24 @@ router.get('/:id', requireAuth, async (req, res) => {
     const [sources, interactions, relationships, introducerRows] = await Promise.all([
       getContactSources(pool, id, userId),
       pool.query(
-        `SELECT * FROM interactions
-         WHERE contact_id = ? AND created_by = ?
-         ORDER BY occurred_at DESC, id DESC`,
+        `SELECT i.* FROM interactions i
+         JOIN contacts c ON c.id = i.contact_id
+         WHERE i.contact_id = ? AND c.owner_user_id = ?
+         ORDER BY i.occurred_at DESC, i.id DESC`,
         [id, userId]
       ).then(([r]) => r),
       pool.query(
         `SELECT r.*, CONCAT_WS(' ', c.first_name, c.last_name) AS linked_name
          FROM relationships r
-         LEFT JOIN contacts c ON c.id = r.related_contact_id AND c.created_by = ?
-         WHERE r.contact_id = ? AND r.created_by = ?
+         JOIN contacts c1 ON c1.id = r.contact_id AND c1.owner_user_id = ?
+         LEFT JOIN contacts c ON c.id = r.related_contact_id AND c.owner_user_id = ?
+         WHERE r.contact_id = ?
          ORDER BY r.relationship_type, r.id`,
-        [userId, id, userId]
+        [userId, userId, id]
       ).then(([r]) => r),
       contact.introduced_by_contact_id
         ? pool.query(
-            'SELECT id, first_name, last_name, company_name FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+            'SELECT id, first_name, last_name, company_name FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
             [contact.introduced_by_contact_id, userId]
           ).then(([r]) => r)
         : Promise.resolve([])
@@ -138,13 +140,14 @@ router.post('/', requireAuth, async (req, res) => {
   try {
     await conn.beginTransaction();
     const data = contactValues(req.body);
+    data.owner_user_id = userId; // Derived strictly from authenticated session
     data.created_by = userId;
     data.updated_by = userId;
 
     // If introduced_by_contact_id is set, verify that it belongs to this user
     if (data.introduced_by_contact_id) {
       const [introRows] = await conn.query(
-        'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+        'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
         [data.introduced_by_contact_id, userId]
       );
       if (introRows.length === 0) {
@@ -188,7 +191,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 
     // Verify contact belongs to authenticated user
     const [existing] = await conn.query(
-      'SELECT id FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+      'SELECT id FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
       [id, userId]
     );
     if (!existing || existing.length === 0) {
@@ -197,6 +200,7 @@ router.put('/:id', requireAuth, async (req, res) => {
     }
 
     const data = contactValues(req.body);
+    data.owner_user_id = userId; // Always derived from authenticated session
     data.updated_by = userId;
 
     // Verify introduced_by_contact_id if provided
@@ -205,7 +209,7 @@ router.put('/:id', requireAuth, async (req, res) => {
         data.introduced_by_contact_id = null; // Cannot introduce oneself
       } else {
         const [introRows] = await conn.query(
-          'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+          'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
           [data.introduced_by_contact_id, userId]
         );
         if (introRows.length === 0) {
@@ -216,7 +220,7 @@ router.put('/:id', requireAuth, async (req, res) => {
       }
     }
 
-    await conn.query('UPDATE contacts SET ? WHERE id = ? AND created_by = ?', [data, id, userId]);
+    await conn.query('UPDATE contacts SET ? WHERE id = ? AND owner_user_id = ?', [data, id, userId]);
 
     const names = sourceNames(req.body);
     await replaceSources(conn, id, names, userId);
@@ -240,7 +244,7 @@ router.delete('/:id', requireAuth, async (req, res) => {
     if (!id || isNaN(id)) return res.status(400).json({ error: 'Invalid contact ID' });
 
     const pool = getPool();
-    const [result] = await pool.query('DELETE FROM contacts WHERE id = ? AND created_by = ?', [id, userId]);
+    const [result] = await pool.query('DELETE FROM contacts WHERE id = ? AND owner_user_id = ?', [id, userId]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Contact not found' });
@@ -267,7 +271,7 @@ router.post('/:id/interactions', requireAuth, async (req, res) => {
     const pool = getPool();
     // Verify contact belongs to user
     const [contacts] = await pool.query(
-      'SELECT id FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+      'SELECT id FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
       [contactId, userId]
     );
     if (!contacts || contacts.length === 0) {
@@ -322,7 +326,7 @@ router.post('/:id/relationships', requireAuth, async (req, res) => {
     const pool = getPool();
     // 1. Verify target contact belongs to authenticated user
     const [contacts] = await pool.query(
-      'SELECT id FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+      'SELECT id FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
       [contactId, userId]
     );
     if (!contacts || contacts.length === 0) {
@@ -340,7 +344,7 @@ router.post('/:id/relationships', requireAuth, async (req, res) => {
       }
 
       const [relRows] = await pool.query(
-        'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND created_by = ? LIMIT 1',
+        'SELECT id, first_name, last_name FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
         [relId, userId]
       );
 

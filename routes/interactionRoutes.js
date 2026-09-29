@@ -12,9 +12,9 @@ router.get('/', requireAuth, async (req, res) => {
       `SELECT i.*, CONCAT_WS(' ', c.first_name, c.last_name) AS contact_name
        FROM interactions i
        JOIN contacts c ON c.id = i.contact_id
-       WHERE (i.created_by = ? OR c.created_by = ?) AND c.created_by = ?
+       WHERE c.owner_user_id = ?
        ORDER BY i.occurred_at DESC, i.id DESC LIMIT 500`,
-      [userId, userId, userId]
+      [userId]
     );
     return res.json(rows);
   } catch (err) {
@@ -35,13 +35,13 @@ router.put('/:id', requireAuth, async (req, res) => {
     const { interaction_type, occurred_at, subject, details, follow_up_date, follow_up_status } = req.body;
     const pool = getPool();
 
-    // Verify interaction belongs to the authenticated user
+    // Verify interaction belongs to the authenticated user's contact
     const [existing] = await pool.query(
       `SELECT i.id FROM interactions i
        JOIN contacts c ON c.id = i.contact_id
-       WHERE i.id = ? AND (i.created_by = ? OR c.created_by = ?) AND c.created_by = ?
+       WHERE i.id = ? AND c.owner_user_id = ?
        LIMIT 1`,
-      [id, userId, userId, userId]
+      [id, userId]
     );
 
     if (!existing || existing.length === 0) {
@@ -96,13 +96,13 @@ router.delete('/:id', requireAuth, async (req, res) => {
     }
 
     const pool = getPool();
-    // Verify interaction belongs to authenticated user
+    // Verify interaction belongs to authenticated user's contact
     const [existing] = await pool.query(
       `SELECT i.id FROM interactions i
        JOIN contacts c ON c.id = i.contact_id
-       WHERE i.id = ? AND (i.created_by = ? OR c.created_by = ?) AND c.created_by = ?
+       WHERE i.id = ? AND c.owner_user_id = ?
        LIMIT 1`,
-      [id, userId, userId, userId]
+      [id, userId]
     );
 
     if (!existing || existing.length === 0) {

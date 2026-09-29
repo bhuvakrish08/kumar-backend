@@ -120,6 +120,53 @@ async function migrate() {
     console.error('Error updating users columns:', e.message);
   }
 
+  // 8. Add owner_user_id to contacts if not exists, backfill safely, add FK & index
+  try {
+    const [colsOwner] = await pool.query("SHOW COLUMNS FROM contacts LIKE 'owner_user_id'");
+    if (colsOwner.length === 0) {
+      await pool.query('ALTER TABLE contacts ADD COLUMN owner_user_id bigint(20) UNSIGNED DEFAULT NULL AFTER photo_url');
+      await pool.query('UPDATE contacts SET owner_user_id = COALESCE(created_by, 2) WHERE owner_user_id IS NULL');
+      await pool.query('ALTER TABLE contacts MODIFY COLUMN owner_user_id bigint(20) UNSIGNED NOT NULL');
+      try {
+        await pool.query('ALTER TABLE contacts ADD KEY idx_contacts_owner (owner_user_id)');
+        await pool.query('ALTER TABLE contacts ADD CONSTRAINT fk_contacts_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE');
+        console.log('Added owner_user_id column, index, and FK constraint to contacts.');
+      } catch (err) {
+        console.log('Note on contacts owner_user_id constraint:', err.message);
+      }
+    } else {
+      console.log('contacts.owner_user_id already exists.');
+    }
+  } catch (e) {
+    console.error('Error adding contacts.owner_user_id:', e.message);
+  }
+
+  // 9. Add owner_user_id to sources if not exists, backfill safely, update uq_user_source index
+  try {
+    const [colsSrcOwner] = await pool.query("SHOW COLUMNS FROM sources LIKE 'owner_user_id'");
+    if (colsSrcOwner.length === 0) {
+      await pool.query('ALTER TABLE sources ADD COLUMN owner_user_id bigint(20) UNSIGNED DEFAULT NULL AFTER created_by');
+      await pool.query('UPDATE sources SET owner_user_id = COALESCE(created_by, 2) WHERE owner_user_id IS NULL');
+      await pool.query('ALTER TABLE sources MODIFY COLUMN owner_user_id bigint(20) UNSIGNED NOT NULL');
+      try {
+        const [indexes] = await pool.query('SHOW INDEX FROM sources');
+        if (indexes.some(i => i.Key_name === 'uq_user_source')) {
+          await pool.query('ALTER TABLE sources DROP INDEX uq_user_source');
+        }
+        await pool.query('ALTER TABLE sources ADD KEY idx_sources_owner (owner_user_id)');
+        await pool.query('ALTER TABLE sources ADD UNIQUE KEY uq_user_source (owner_user_id, name)');
+        await pool.query('ALTER TABLE sources ADD CONSTRAINT fk_sources_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE');
+        console.log('Added owner_user_id column, updated uq_user_source, and added FK constraint to sources.');
+      } catch (err) {
+        console.log('Note on sources owner_user_id constraint:', err.message);
+      }
+    } else {
+      console.log('sources.owner_user_id already exists.');
+    }
+  } catch (e) {
+    console.error('Error adding sources.owner_user_id:', e.message);
+  }
+
   console.log('Migration finished successfully!');
   process.exit(0);
 }
