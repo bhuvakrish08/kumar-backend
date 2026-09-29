@@ -324,4 +324,210 @@ router.post('/change-credentials', requireAuth, handleChangePassword);
 router.put('/change-password', requireAuth, handleChangePassword);
 router.post('/change-password', requireAuth, handleChangePassword);
 
+// ======================================================
+// FORGOT PASSWORD WORKFLOW (BREVO OTP)
+// ======================================================
+const { sendBrevoEmail, buildOtpEmailTemplate } = require('../lib/brevo');
+const crypto = require('crypto');
+
+// 1. POST /api/v1/auth/forgot-password
+// Generates a 6-digit OTP, stores it in password_resets, and emails it via Brevo
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+
+    if (!trimmedEmail) {
+      return res.status(400).json({ error: 'Please provide your registered email address.' });
+    }
+
+    const pool = getPool();
+    // Ensure table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        otp VARCHAR(10) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_email_otp (email, otp),
+        INDEX idx_expires (expires_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // Find user by email
+    const [users] = await pool.query(
+      'SELECT id, username, email FROM users WHERE LOWER(email) = ? LIMIT 1',
+      [trimmedEmail]
+    );
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        error: 'No account registered with this email address.'
+      });
+    }
+
+    const user = users[0];
+
+    // Invalidate any existing unused OTPs for this email
+    await pool.query(
+      'UPDATE password_resets SET used = 1 WHERE email = ? AND used = 0',
+      [trimmedEmail]
+    );
+
+    // Generate secure 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    // Expiry: 2 minutes from now
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+
+    // Save to password_resets
+    await pool.query(
+      'INSERT INTO password_resets (user_id, email, otp, expires_at) VALUES (?, ?, ?, ?)',
+      [user.id, trimmedEmail, otp, expiresAt]
+    );
+
+    // Send email using Brevo
+    try {
+      const emailHtml = buildOtpEmailTemplate(otp, user.username);
+      await sendBrevoEmail({
+        to: trimmedEmail,
+        name: user.username,
+        subject: `Your Kumarda Contacts Password Reset OTP: ${otp}`,
+        htmlContent: emailHtml
+      });
+    } catch (mailErr) {
+      console.error('Brevo sending failure:', mailErr);
+      return res.status(500).json({
+        error: mailErr.message || 'Failed to dispatch OTP email. Please verify Brevo configuration.'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `A 6-digit OTP has been sent to ${trimmedEmail}. It will expire in 2 minutes.`,
+      email: trimmedEmail
+    });
+
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    return res.status(500).json({ error: 'Server error processing password reset request.' });
+  }
+});
+
+// 2. POST /api/v1/auth/verify-otp
+// Validates whether the 6-digit OTP is valid and non-expired
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedOtp = (otp || '').toString().trim();
+
+    if (!trimmedEmail || !trimmedOtp) {
+      return res.status(400).json({ error: 'Email and OTP are both required.' });
+    }
+
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, user_id, expires_at, used
+       FROM password_resets
+       WHERE email = ? AND otp = ?
+       ORDER BY id DESC LIMIT 1`,
+      [trimmedEmail, trimmedOtp]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code. Please check and try again.' });
+    }
+
+    const resetRecord = rows[0];
+
+    if (resetRecord.used) {
+      return res.status(400).json({ error: 'This verification code has already been used.' });
+    }
+
+    if (new Date() > new Date(resetRecord.expires_at)) {
+      return res.status(400).json({ error: 'This verification code has expired. Please request a new one.' });
+    }
+
+    // OTP is valid
+    return res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully.'
+    });
+
+  } catch (err) {
+    console.error('Verify OTP error:', err);
+    return res.status(500).json({ error: 'Server error verifying OTP.' });
+  }
+});
+
+// 3. POST /api/v1/auth/reset-password
+// Validates OTP, hashes new password, updates user record, and marks OTP as used
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedOtp = (otp || '').toString().trim();
+    const trimmedPassword = (newPassword || '').trim();
+
+    if (!trimmedEmail || !trimmedOtp) {
+      return res.status(400).json({ error: 'Email and OTP code are required.' });
+    }
+
+    if (!trimmedPassword || trimmedPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, user_id, expires_at, used
+       FROM password_resets
+       WHERE email = ? AND otp = ?
+       ORDER BY id DESC LIMIT 1`,
+      [trimmedEmail, trimmedOtp]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code.' });
+    }
+
+    const resetRecord = rows[0];
+
+    if (resetRecord.used) {
+      return res.status(400).json({ error: 'This verification code has already been used.' });
+    }
+
+    if (new Date() > new Date(resetRecord.expires_at)) {
+      return res.status(400).json({ error: 'This verification code has expired. Please request a new one.' });
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(trimmedPassword, 10);
+
+    // Update password in users table
+    await pool.query(
+      'UPDATE users SET password = ?, password_hash = ? WHERE id = ?',
+      [passwordHash, passwordHash, resetRecord.user_id]
+    );
+
+    // Mark reset record as used
+    await pool.query(
+      'UPDATE password_resets SET used = 1 WHERE id = ?',
+      [resetRecord.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password reset successfully! You can now log in with your new password.'
+    });
+
+  } catch (err) {
+    console.error('Reset password error:', err);
+    return res.status(500).json({ error: 'Failed to reset password.' });
+  }
+});
+
 module.exports = router;
