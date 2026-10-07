@@ -1,0 +1,507 @@
+const express = require('express');
+const router = express.Router();
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+
+const { getPool } = require('../db');
+const {
+  COOKIE_NAME,
+  getSecret,
+  requireAuth,
+} = require('../middleware/authMiddleware');
+
+// Helper function to ensure columns exist in users table
+async function ensureUserColumnsExist(pool) {
+  const columnsToAdd = [
+    { col: 'username', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'email', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'mobile_no', spec: 'VARCHAR(50) DEFAULT NULL' },
+    { col: 'full_name', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'name', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'password', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'password_hash', spec: 'VARCHAR(255) DEFAULT NULL' },
+  ];
+
+  for (const { col, spec } of columnsToAdd) {
+    try {
+      const [rows] = await pool.query(`SHOW COLUMNS FROM users LIKE '${col}'`);
+      if (!rows || rows.length === 0) {
+        await pool.query(`ALTER TABLE users ADD COLUMN ${col} ${spec}`);
+      }
+    } catch (e) {
+      // Ignore if column check fails
+    }
+  }
+}
+
+// ======================================================
+// POST /api/v1/auth/register
+// ======================================================
+router.post('/register', async (req, res) => {
+  try {
+    const { username, name, email, mobile, mobile_no, password } = req.body;
+    const rawMobile = mobile_no || mobile || '';
+
+    const trimmedUsername = (username || '').trim();
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedMobile = rawMobile.trim();
+    const trimmedName = (name || trimmedUsername || trimmedEmail).trim();
+
+    if (!trimmedUsername) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+    if (!trimmedEmail) {
+      return res.status(400).json({ error: 'Email address is required' });
+    }
+    if (!trimmedMobile) {
+      return res.status(400).json({ error: 'Mobile number is required' });
+    }
+    if (!password || password.trim().length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long' });
+    }
+
+    const pool = getPool();
+    await ensureUserColumnsExist(pool);
+
+    // Check if user with this username or email already exists
+    const [existing] = await pool.query(
+      'SELECT id, username, email FROM users WHERE username = ? OR email = ? LIMIT 1',
+      [trimmedUsername, trimmedEmail]
+    );
+
+    if (existing && existing.length > 0) {
+      if (existing[0].username === trimmedUsername) {
+        return res.status(400).json({ error: 'A user with this username already exists' });
+      }
+      return res.status(400).json({ error: 'A user with this email address already exists' });
+    }
+
+    // Hash password with bcrypt
+    const passwordHash = await bcrypt.hash(password.trim(), 10);
+
+    // Insert new user into MySQL users table
+    const [insertRes] = await pool.query(
+      `INSERT INTO users (username, name, full_name, email, mobile_no, password, password_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [trimmedUsername, trimmedName, trimmedName, trimmedEmail, trimmedMobile, passwordHash, passwordHash]
+    );
+
+    const userId = insertRes.insertId;
+
+    // Generate JWT Session Token
+    const tokenPayload = {
+      id: userId,
+      username: trimmedUsername,
+      full_name: trimmedName,
+      email: trimmedEmail,
+    };
+
+    const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
+
+    // Store token in HTTP-Only Cookie
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+      maxAge: 14 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(201).json({
+      message: 'Registered and logged in successfully',
+      user: tokenPayload,
+    });
+
+  } catch (err) {
+    console.error('Registration error:', err);
+    return res.status(500).json({ error: err.message || 'Server error during registration' });
+  }
+});
+
+// ======================================================
+// POST /api/v1/auth/login
+// ======================================================
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username/Email and password are required' });
+    }
+
+    const trimmedUsername = username.trim();
+    const pool = getPool();
+    await ensureUserColumnsExist(pool);
+
+    // Query user from MySQL users table by username OR email
+    const [rows] = await pool.query(
+      'SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1',
+      [trimmedUsername, trimmedUsername.toLowerCase()]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(401).json({ error: 'Incorrect username or password' });
+    }
+
+    const user = rows[0];
+    const storedPassword = user.password || user.password_hash;
+
+    if (!storedPassword) {
+      return res.status(401).json({ error: 'Incorrect username or password' });
+    }
+
+    // Compare entered password with bcrypt hash in database (strictly bcrypt, no plaintext fallbacks)
+    const passwordMatched = await bcrypt.compare(password, storedPassword);
+
+    if (!passwordMatched) {
+      return res.status(401).json({ error: 'Incorrect username or password' });
+    }
+
+    // Generate JWT Token
+    const tokenPayload = {
+      id: user.id,
+      username: user.username,
+      full_name: user.full_name || null,
+    };
+
+    const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+      maxAge: 14 * 24 * 60 * 60 * 1000,
+    });
+
+    // Secure response: do NOT return JWT token in JSON response
+    return res.status(200).json({
+      message: 'Logged in successfully',
+      user: tokenPayload,
+    });
+
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Server error during authentication' });
+  }
+});
+
+// ======================================================
+// POST /api/v1/auth/logout
+// ======================================================
+router.post('/logout', (req, res) => {
+  try {
+    const isProd = process.env.NODE_ENV === 'production';
+    res.clearCookie(COOKIE_NAME, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+    });
+    return res.status(200).json({ message: 'Logged out successfully' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to logout' });
+  }
+});
+
+// ======================================================
+// GET /api/v1/auth/me
+// ======================================================
+router.get('/me', requireAuth, (req, res) => {
+  return res.status(200).json({ user: req.user });
+});
+
+// ======================================================
+// Change Password Handler
+// ======================================================
+async function handleChangePassword(req, res) {
+  try {
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.trim() === '') {
+      return res.status(400).json({ error: 'Please enter a new password' });
+    }
+
+    const trimmedPassword = newPassword.trim();
+    if (trimmedPassword.length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long' });
+    }
+
+    const userId = req.user.id;
+    const username = req.user.username;
+
+    if (!userId && !username) {
+      return res.status(401).json({ error: 'Invalid authenticated user' });
+    }
+
+    const pool = getPool();
+
+    // Generate bcrypt hash for the new password
+    const passwordHash = await bcrypt.hash(trimmedPassword, 10);
+
+    // Update password in database users table (handles both 'password' and 'password_hash' columns)
+    let updated = false;
+    try {
+      const [res1] = await pool.query(
+        'UPDATE users SET password = ? WHERE id = ? OR username = ?',
+        [passwordHash, userId, username]
+      );
+      if (res1 && res1.affectedRows > 0) updated = true;
+    } catch (e) {
+      // Ignore if column doesn't exist
+    }
+
+    if (!updated) {
+      try {
+        const [res2] = await pool.query(
+          'UPDATE users SET password_hash = ? WHERE id = ? OR username = ?',
+          [passwordHash, userId, username]
+        );
+        if (res2 && res2.affectedRows > 0) updated = true;
+      } catch (e) {
+        // Ignore
+      }
+    }
+
+    const tokenPayload = {
+      id: userId,
+      username: username,
+      full_name: req.user.full_name || null,
+    };
+
+    const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie(COOKIE_NAME, token, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      path: '/',
+      maxAge: 14 * 24 * 60 * 60 * 1000,
+    });
+
+    return res.status(200).json({
+      message: 'Password updated successfully!',
+      user: tokenPayload,
+    });
+
+  } catch (err) {
+    console.error('Change password error:', err);
+    return res.status(500).json({ error: 'Failed to update password' });
+  }
+}
+
+router.put('/change-credentials', requireAuth, handleChangePassword);
+router.post('/change-credentials', requireAuth, handleChangePassword);
+router.put('/change-password', requireAuth, handleChangePassword);
+router.post('/change-password', requireAuth, handleChangePassword);
+
+// ======================================================
+// FORGOT PASSWORD WORKFLOW (BREVO OTP)
+// ======================================================
+const { sendBrevoEmail, buildOtpEmailTemplate } = require('../lib/brevo');
+const crypto = require('crypto');
+
+// 1. POST /api/v1/auth/forgot-password
+// Generates a 6-digit OTP, stores it in password_resets, and emails it via Brevo
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+
+    if (!trimmedEmail) {
+      return res.status(400).json({ error: 'Please provide your registered email address.' });
+    }
+
+    const pool = getPool();
+    // Ensure table exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        email VARCHAR(255) NOT NULL,
+        otp VARCHAR(10) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_email_otp (email, otp),
+        INDEX idx_expires (expires_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // Find user by email
+    const [users] = await pool.query(
+      'SELECT id, username, email FROM users WHERE LOWER(email) = ? LIMIT 1',
+      [trimmedEmail]
+    );
+
+    if (!users || users.length === 0) {
+      return res.status(404).json({
+        error: 'No account registered with this email address.'
+      });
+    }
+
+    const user = users[0];
+
+    // Invalidate any existing unused OTPs for this email
+    await pool.query(
+      'UPDATE password_resets SET used = 1 WHERE email = ? AND used = 0',
+      [trimmedEmail]
+    );
+
+    // Generate secure 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+
+    // Expiry: 2 minutes from now
+    const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+
+    // Save to password_resets
+    await pool.query(
+      'INSERT INTO password_resets (user_id, email, otp, expires_at) VALUES (?, ?, ?, ?)',
+      [user.id, trimmedEmail, otp, expiresAt]
+    );
+
+    // Send email using Brevo
+    try {
+      const emailHtml = buildOtpEmailTemplate(otp, user.username);
+      await sendBrevoEmail({
+        to: trimmedEmail,
+        name: user.username,
+        subject: `Your Kumarda Contacts Password Reset OTP: ${otp}`,
+        htmlContent: emailHtml
+      });
+    } catch (mailErr) {
+      console.error('Brevo sending failure:', mailErr);
+      return res.status(500).json({
+        error: mailErr.message || 'Failed to dispatch OTP email. Please verify Brevo configuration.'
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `A 6-digit OTP has been sent to ${trimmedEmail}. It will expire in 2 minutes.`,
+      email: trimmedEmail
+    });
+
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    return res.status(500).json({ error: 'Server error processing password reset request.' });
+  }
+});
+
+// 2. POST /api/v1/auth/verify-otp
+// Validates whether the 6-digit OTP is valid and non-expired
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedOtp = (otp || '').toString().trim();
+
+    if (!trimmedEmail || !trimmedOtp) {
+      return res.status(400).json({ error: 'Email and OTP are both required.' });
+    }
+
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, user_id, expires_at, used
+       FROM password_resets
+       WHERE email = ? AND otp = ?
+       ORDER BY id DESC LIMIT 1`,
+      [trimmedEmail, trimmedOtp]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code. Please check and try again.' });
+    }
+
+    const resetRecord = rows[0];
+
+    if (resetRecord.used) {
+      return res.status(400).json({ error: 'This verification code has already been used.' });
+    }
+
+    if (new Date() > new Date(resetRecord.expires_at)) {
+      return res.status(400).json({ error: 'This verification code has expired. Please request a new one.' });
+    }
+
+    // OTP is valid
+    return res.status(200).json({
+      success: true,
+      message: 'OTP verified successfully.'
+    });
+
+  } catch (err) {
+    console.error('Verify OTP error:', err);
+    return res.status(500).json({ error: 'Server error verifying OTP.' });
+  }
+});
+
+// 3. POST /api/v1/auth/reset-password
+// Validates OTP, hashes new password, updates user record, and marks OTP as used
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedOtp = (otp || '').toString().trim();
+    const trimmedPassword = (newPassword || '').trim();
+
+    if (!trimmedEmail || !trimmedOtp) {
+      return res.status(400).json({ error: 'Email and OTP code are required.' });
+    }
+
+    if (!trimmedPassword || trimmedPassword.length < 10) {
+      return res.status(400).json({ error: 'Password must be at least 10 characters long.' });
+    }
+
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT id, user_id, expires_at, used
+       FROM password_resets
+       WHERE email = ? AND otp = ?
+       ORDER BY id DESC LIMIT 1`,
+      [trimmedEmail, trimmedOtp]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification code.' });
+    }
+
+    const resetRecord = rows[0];
+
+    if (resetRecord.used) {
+      return res.status(400).json({ error: 'This verification code has already been used.' });
+    }
+
+    if (new Date() > new Date(resetRecord.expires_at)) {
+      return res.status(400).json({ error: 'This verification code has expired. Please request a new one.' });
+    }
+
+    // Hash new password
+    const passwordHash = await bcrypt.hash(trimmedPassword, 10);
+
+    // Update password in users table
+    await pool.query(
+      'UPDATE users SET password = ?, password_hash = ? WHERE id = ?',
+      [passwordHash, passwordHash, resetRecord.user_id]
+    );
+
+    // Mark reset record as used
+    await pool.query(
+      'UPDATE password_resets SET used = 1 WHERE id = ?',
+      [resetRecord.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password reset successfully! You can now log in with your new password.'
+    });
+
+  } catch (err) {
+    console.error('Reset password error:', err);
+    return res.status(500).json({ error: 'Failed to reset password.' });
+  }
+});
+
+module.exports = router;
