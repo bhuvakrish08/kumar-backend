@@ -1,0 +1,38 @@
+{
+  "version": "v0.2.0",
+  "description": "Dossier Identity Resolution Scoring & Threshold Configuration v0.2",
+  "thresholds": {
+    "match": 45,
+    "probable_match": 25,
+    "ambiguous_margin": 15,
+    "minimum_confidence": 20
+  },
+  "weights": {
+    "strong_identifier": {
+      "personal_mobile_exact": 50,
+      "email_exact": 50,
+      "shared_office_phone_exact": 15,
+      "unverified_phone_exact": 10
+    },
+    "identity": {
+      "full_name_exact": 30,
+      "first_name_exact": 15,
+      "nickname_exact": 20
+    },
+    "organization": {
+      "company_exact": 15,
+      "company_mismatch_penalty": -10,
+      "company_mismatch_temporal_ignore": true
+    },
+    "relationship": {
+      "introducer_exact": 10
+    },
+    "contextual": {
+      "met_context_exact": 5
+    },
+    "negative": {
+      "email_mismatch_penalty": -25,
+      "phone_mismatch_penalty": -25
+    }
+  }
+}

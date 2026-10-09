@@ -334,6 +334,100 @@ async function migrate() {
     console.error('Error creating commitments table:', e.message);
   }
 
+  // 14. Migration 003: Create contact_history table & alter fact_provenance
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contact_history (
+        id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+        owner_user_id bigint(20) UNSIGNED NOT NULL,
+        contact_id bigint(20) UNSIGNED NOT NULL,
+        fact_type varchar(50) NOT NULL,
+        value_payload json NOT NULL,
+        valid_from datetime DEFAULT CURRENT_TIMESTAMP,
+        valid_to datetime DEFAULT NULL,
+        is_current tinyint(1) NOT NULL DEFAULT '1',
+        confidence_status varchar(50) NOT NULL DEFAULT 'CONFIRMED',
+        source_input_event_id bigint(20) UNSIGNED DEFAULT NULL,
+        created_at datetime DEFAULT CURRENT_TIMESTAMP,
+        updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_history_owner (owner_user_id),
+        KEY idx_history_contact (contact_id),
+        KEY idx_history_event (source_input_event_id),
+        CONSTRAINT fk_history_owner FOREIGN KEY (owner_user_id) REFERENCES users (id) ON DELETE CASCADE,
+        CONSTRAINT fk_history_contact FOREIGN KEY (contact_id) REFERENCES contacts (id) ON DELETE CASCADE,
+        CONSTRAINT fk_history_event FOREIGN KEY (source_input_event_id) REFERENCES input_events (id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log('Verified contact_history table exists.');
+
+    const [colsCandidate] = await pool.query("SHOW COLUMNS FROM fact_provenance LIKE 'candidate_fact_id'");
+    if (colsCandidate.length === 0) {
+      await pool.query(`
+        ALTER TABLE fact_provenance
+          ADD COLUMN candidate_fact_id bigint(20) UNSIGNED DEFAULT NULL AFTER input_event_id,
+          ADD COLUMN target_type varchar(50) DEFAULT NULL AFTER candidate_fact_id,
+          ADD COLUMN target_id bigint(20) UNSIGNED DEFAULT NULL AFTER target_type,
+          ADD KEY idx_provenance_candidate (candidate_fact_id),
+          ADD CONSTRAINT fk_provenance_candidate FOREIGN KEY (candidate_fact_id) REFERENCES candidate_facts (id) ON DELETE SET NULL
+      `);
+      console.log('Altered fact_provenance to include candidate_fact_id, target_type, and target_id.');
+
+      // Safely backfill parseable legacy target_reference (e.g. contacts:123 -> target_type='contact', target_id=123)
+      const [provRows] = await pool.query('SELECT id, target_reference FROM fact_provenance WHERE target_type IS NULL');
+      for (const p of provRows) {
+        if (p.target_reference && p.target_reference.includes(':')) {
+          const parts = p.target_reference.split(':');
+          const type = parts[0] === 'contacts' ? 'contact' : parts[0] === 'interactions' ? 'interaction' : parts[0];
+          const idNum = parseInt(parts[1], 10);
+          if (type && !isNaN(idNum)) {
+            await pool.query('UPDATE fact_provenance SET target_type = ?, target_id = ? WHERE id = ?', [type, idNum, p.id]);
+          }
+        }
+      }
+      console.log('Backfilled parseable legacy fact_provenance target_reference values.');
+    } else {
+      console.log('fact_provenance candidate_fact_id already exists.');
+    }
+
+    // Safely backfill current contact facts into contact_history for existing contacts if missing
+    const [existingContacts] = await pool.query('SELECT id, owner_user_id, company_name, primary_phone, mobile_phone, primary_email FROM contacts');
+    for (const c of existingContacts) {
+      if (c.company_name) {
+        const [h] = await pool.query('SELECT id FROM contact_history WHERE contact_id = ? AND fact_type = "employment" LIMIT 1', [c.id]);
+        if (h.length === 0) {
+          await pool.query(
+            'INSERT INTO contact_history (owner_user_id, contact_id, fact_type, value_payload, is_current, confidence_status) VALUES (?, ?, "employment", ?, 1, "CONFIRMED")',
+            [c.owner_user_id, c.id, JSON.stringify({ company_name: c.company_name })]
+          );
+        }
+      }
+      const phoneVal = c.primary_phone || c.mobile_phone;
+      if (phoneVal) {
+        const [h] = await pool.query('SELECT id FROM contact_history WHERE contact_id = ? AND fact_type = "phone" LIMIT 1', [c.id]);
+        if (h.length === 0) {
+          await pool.query(
+            'INSERT INTO contact_history (owner_user_id, contact_id, fact_type, value_payload, is_current, confidence_status) VALUES (?, ?, "phone", ?, 1, "CONFIRMED")',
+            [c.owner_user_id, c.id, JSON.stringify({ phone: phoneVal })]
+          );
+        }
+      }
+      if (c.primary_email) {
+        const [h] = await pool.query('SELECT id FROM contact_history WHERE contact_id = ? AND fact_type = "email" LIMIT 1', [c.id]);
+        if (h.length === 0) {
+          await pool.query(
+            'INSERT INTO contact_history (owner_user_id, contact_id, fact_type, value_payload, is_current, confidence_status) VALUES (?, ?, "email", ?, 1, "CONFIRMED")',
+            [c.owner_user_id, c.id, JSON.stringify({ email: c.primary_email })]
+          );
+        }
+      }
+    }
+    console.log('Verified contact_history backfill complete.');
+
+  } catch (e) {
+    console.error('Error executing Migration 003:', e.message);
+  }
+
   console.log('Migration finished successfully!');
   process.exit(0);
 }

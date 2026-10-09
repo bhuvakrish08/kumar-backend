@@ -2,13 +2,15 @@ const express = require('express');
 const router = express.Router();
 const { getPool } = require('../db');
 const { requireAuth } = require('../middleware/authMiddleware');
-const { extractCandidateFacts, PARSER_VERSION } = require('../lib/intelligence');
+const { extractCandidateFactsWithAdapter } = require('../lib/aiAdapter');
 const { resolveIdentity } = require('../lib/identityResolution');
+const { analyzeTemporalTransitions, saveContactHistoryTransitions } = require('../lib/temporalReconciliation');
+const { PARSER_VERSION } = require('../lib/intelligence');
 const { buildNarrative } = require('../lib/narrative');
 
 /**
  * POST /api/v1/tell-dossier/analyze
- * Step 1 of Tell Dossier: Parse messy text, run identity resolution, return review package
+ * Step 1 of Tell Dossier: Parse messy text, run strict AI validation, identity resolution v0.2, and temporal analysis.
  */
 router.post('/analyze', requireAuth, async (req, res) => {
   try {
@@ -29,28 +31,34 @@ router.post('/analyze', requireAuth, async (req, res) => {
     );
     const inputEventId = eventRes.insertId;
 
-    // 2. Extract Candidate Facts (Server-side Provider-Neutral Intelligence Layer)
-    const extraction = await extractCandidateFacts(raw_content, { userId });
+    // 2. Extract & Validate Candidate Facts (via AI Adapter & Strict CandidateFactSet Schema Validator)
+    const extraction = await extractCandidateFactsWithAdapter(raw_content, { userId });
 
-    // 3. Fetch User's existing contacts for backend identity resolution
+    // 3. Fetch User's existing contacts for identity resolution
     const [existingContacts] = await pool.query(
       `SELECT id, first_name, middle_name, last_name, nickname, company_name, job_title, primary_email, primary_phone, mobile_phone, introduced_by_name, how_we_met_notes
        FROM contacts WHERE owner_user_id = ?`,
       [userId]
     );
 
-    // 4. Run Identity Resolution v0.1
-    const identityRes = resolveIdentity(extraction.person, existingContacts);
+    // 4. Analyze Temporal Transitions (e.g. "John left IBM and joined Amazon")
+    const temporalAnalysis = analyzeTemporalTransitions(raw_content, extraction.person, null);
 
-    // 5. Store Candidate Facts in DB
+    // 5. Run Identity Resolution Engine v0.2
+    const identityRes = resolveIdentity(extraction.person, existingContacts, {
+      isTemporalEmployerChange: temporalAnalysis.isTemporalEmployerChange
+    });
+
+    // 6. Store Candidate Facts in DB
     const confidenceScore = identityRes.decision === 'MATCH' ? 0.95 : identityRes.decision === 'PROBABLE_MATCH' ? 0.75 : 0.50;
     const conflictState = identityRes.decision === 'CONFLICT' ? 'CONFLICT' : identityRes.decision === 'AMBIGUOUS' ? 'AMBIGUOUS' : 'NONE';
 
-    await pool.query(
+    const [factRes] = await pool.query(
       `INSERT INTO candidate_facts (owner_user_id, input_event_id, candidate_type, structured_payload, confidence, status, conflict_state)
        VALUES (?, ?, 'tell_dossier_extraction', ?, ?, 'PENDING', ?)`,
       [userId, inputEventId, JSON.stringify(extraction), confidenceScore, conflictState]
     );
+    const candidateFactId = factRes.insertId;
 
     // Update Input Event processing status
     await pool.query(
@@ -58,7 +66,7 @@ router.post('/analyze', requireAuth, async (req, res) => {
       [inputEventId, userId]
     );
 
-    // 6. Build structured review items
+    // 7. Build structured review items
     let matchedContact = null;
     if (identityRes.matchedContactId) {
       const [matchedRows] = await pool.query(
@@ -69,16 +77,18 @@ router.post('/analyze', requireAuth, async (req, res) => {
       if (matchedRows.length > 0) matchedContact = matchedRows[0];
     }
 
+    const personRole = extraction.person.title || extraction.person.professional_role || '';
+
     const reviewItems = {
       contact_info: {
         name: { value: extraction.person.name || '', status: matchedContact ? 'RECONFIRM' : 'ADD' },
         phone: { value: extraction.person.phone || '', status: matchedContact ? (matchedContact.primary_phone || matchedContact.mobile_phone ? 'UPDATE' : 'ADD') : 'ADD' },
         email: { value: extraction.person.email || '', status: matchedContact ? (matchedContact.primary_email ? 'UPDATE' : 'ADD') : 'ADD' },
-        title: { value: extraction.person.title || '', status: matchedContact ? 'UPDATE' : 'ADD' }
+        title: { value: personRole, status: matchedContact ? 'UPDATE' : 'ADD' }
       },
       organization: {
         company_name: { value: extraction.person.organization || '', status: matchedContact ? (matchedContact.company_name ? 'UPDATE' : 'ADD') : 'ADD' },
-        job_title: { value: extraction.person.title || '', status: matchedContact ? 'UPDATE' : 'ADD' }
+        job_title: { value: personRole, status: matchedContact ? 'UPDATE' : 'ADD' }
       },
       how_we_met: {
         met_date: { value: extraction.person.met_date || '', status: 'ADD' },
@@ -99,19 +109,23 @@ router.post('/analyze', requireAuth, async (req, res) => {
         details: c.details,
         due_time: c.due_time,
         status: 'ADD'
-      }))
+      })),
+      temporal_transitions: temporalAnalysis.historyTransitions
     };
 
     return res.json({
       input_event_id: inputEventId,
+      candidate_fact_id: candidateFactId,
       raw_content: raw_content,
       extraction,
       identity_resolution: {
         decision: identityRes.decision,
         matched_contact: matchedContact,
         candidate_contacts: identityRes.candidateContacts,
-        evidence: identityRes.evidence
+        evidence: identityRes.evidence,
+        model_version: identityRes.model_version
       },
+      temporal_analysis: temporalAnalysis,
       review_items: reviewItems
     });
 
@@ -123,13 +137,13 @@ router.post('/analyze', requireAuth, async (req, res) => {
 
 /**
  * POST /api/v1/tell-dossier/commit
- * Step 2 of Tell Dossier: Save user-accepted candidate facts to authoritative DB
+ * Step 2 of Tell Dossier: Save user-accepted candidate facts to authoritative DB with provenance and temporal history.
  */
 router.post('/commit', requireAuth, async (req, res) => {
   const connection = await getPool().getConnection();
   try {
     const userId = req.user.id;
-    const { input_event_id, target_person_option, target_contact_id, accepted_items, identity_decision } = req.body;
+    const { input_event_id, candidate_fact_id, target_person_option, target_contact_id, accepted_items, identity_decision } = req.body;
 
     if (!input_event_id) {
       connection.release();
@@ -149,7 +163,7 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     const inputEvent = eventRows[0];
 
-    // Enforce Rule: AMBIGUOUS or CONFLICT identity decision requires explicit resolution from user
+    // Enforce Guardrail: AMBIGUOUS or CONFLICT identity decision requires explicit resolution from user
     if ((identity_decision === 'AMBIGUOUS' || identity_decision === 'CONFLICT') && !target_person_option) {
       connection.release();
       return res.status(400).json({
@@ -161,7 +175,7 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     let finalContactId = null;
 
-    // Helper to safely extract string value whether item is string or object {value: ...}
+    // Helper to safely extract string value
     const getVal = (v) => {
       if (!v) return null;
       if (typeof v === 'string') return v.trim();
@@ -190,6 +204,8 @@ router.post('/commit', requireAuth, async (req, res) => {
     const howWeMetNotes = getVal(accepted_items?.how_we_met?.how_we_met_notes);
     const personalNotes = getVal(accepted_items?.notes) || inputEvent.raw_content;
 
+    let existingContactObj = null;
+
     if (target_person_option === 'existing' && target_contact_id) {
       // Security Check: Verify target contact belongs to user
       const [contactRows] = await connection.query(
@@ -204,7 +220,7 @@ router.post('/commit', requireAuth, async (req, res) => {
       }
 
       finalContactId = target_contact_id;
-      const existing = contactRows[0];
+      existingContactObj = contactRows[0];
 
       // Update contact fields if provided
       await connection.query(
@@ -228,26 +244,6 @@ router.post('/commit', requireAuth, async (req, res) => {
         ]
       );
 
-      // Preserve narrative override if set
-      if (!existing.narrative_override) {
-        const updatedNarrative = buildNarrative({
-          ...existing,
-          first_name: firstName || existing.first_name,
-          last_name: lastName || existing.last_name,
-          job_title: title || existing.job_title,
-          company_name: company || existing.company_name,
-          primary_phone: phone || existing.primary_phone,
-          primary_email: email || existing.primary_email,
-          met_date: metDate || existing.met_date,
-          met_context: metContext || existing.met_context,
-          introduced_by_name: introducer || existing.introduced_by_name,
-          how_we_met_notes: howWeMetNotes || existing.how_we_met_notes,
-          personal_notes: existing.personal_notes ? existing.personal_notes + '\n' + personalNotes : personalNotes
-        }, []);
-
-        // Narrative is generated dynamically by narrative.js, but if user overrides, set narrative_override
-      }
-
     } else {
       // Create NEW person contact
       const [cRes] = await connection.query(
@@ -258,12 +254,19 @@ router.post('/commit', requireAuth, async (req, res) => {
       finalContactId = cRes.insertId;
     }
 
+    // Temporal Reconciliation: Save temporal history transitions
+    const temporalAnalysis = analyzeTemporalTransitions(inputEvent.raw_content, { name: nameStr, phone, email, organization: company }, existingContactObj);
+    if (accepted_items?.temporal_transitions && Array.isArray(accepted_items.temporal_transitions)) {
+      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, accepted_items.temporal_transitions);
+    } else if (temporalAnalysis.historyTransitions.length > 0) {
+      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, temporalAnalysis.historyTransitions);
+    }
+
     // Save Sources
     if (accepted_items?.sources && Array.isArray(accepted_items.sources)) {
       for (const item of accepted_items.sources) {
         const cleanSrc = getVal(item);
         if (!cleanSrc) continue;
-        // Insert source if not exists for owner
         await connection.query(
           `INSERT INTO sources (owner_user_id, created_by, name) VALUES (?, ?, ?)
            ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)`,
@@ -326,17 +329,32 @@ router.post('/commit', requireAuth, async (req, res) => {
       }
     }
 
-    // Save Fact Provenance records for audit trail
+    // Save Normalized Fact Provenance records with candidate_fact_id, target_type, target_id
+    const candFactId = candidate_fact_id || null;
     const provenanceEntries = [
-      { fact_type: 'person_contact', target: `contacts:${finalContactId}`, excerpt: `Extracted person: ${firstName} ${lastName}` },
-      { fact_type: 'interaction', target: createdInteractionId ? `interactions:${createdInteractionId}` : `contacts:${finalContactId}`, excerpt: inputEvent.raw_content }
+      {
+        candidate_fact_id: candFactId,
+        target_type: 'contact',
+        target_id: finalContactId,
+        target_reference: `contacts:${finalContactId}`,
+        fact_type: 'person_contact',
+        source_excerpt: `Extracted person: ${firstName} ${lastName}`
+      },
+      {
+        candidate_fact_id: candFactId,
+        target_type: createdInteractionId ? 'interaction' : 'contact',
+        target_id: createdInteractionId || finalContactId,
+        target_reference: createdInteractionId ? `interactions:${createdInteractionId}` : `contacts:${finalContactId}`,
+        fact_type: 'interaction',
+        source_excerpt: inputEvent.raw_content
+      }
     ];
 
     for (const p of provenanceEntries) {
       await connection.query(
-        `INSERT INTO fact_provenance (owner_user_id, input_event_id, target_reference, fact_type, source_excerpt, confirmation_time)
-         VALUES (?, ?, ?, ?, ?, NOW())`,
-        [userId, input_event_id, p.target, p.fact_type, p.excerpt]
+        `INSERT INTO fact_provenance (owner_user_id, input_event_id, candidate_fact_id, target_type, target_id, target_reference, fact_type, source_excerpt, confirmation_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [userId, input_event_id, p.candidate_fact_id, p.target_type, p.target_id, p.target_reference, p.fact_type, p.source_excerpt]
       );
     }
 

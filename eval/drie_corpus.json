@@ -1,0 +1,268 @@
+[
+  {
+    "id": "CASE-001",
+    "title": "US Mobile Exact Match - Compatible Name",
+    "category": "strong_identifier",
+    "candidate_input": { "name": "David Miller", "phone": "+1 (987) 654-3210", "email": "david@techcorp.com", "organization": "Tech Corp" },
+    "existing_contacts": [{ "id": 101, "first_name": "David", "last_name": "Miller", "company_name": "Tech Corp", "primary_phone": "+19876543210", "primary_email": "david@techcorp.com" }],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 101,
+    "danger_of_false_merge": "High if trailing digits only are matched without country code"
+  },
+  {
+    "id": "CASE-002",
+    "title": "India +91 Mobile Match vs US +1 Same Trailing Digits",
+    "category": "international_phone",
+    "candidate_input": { "name": "Rahul Sharma", "phone": "+91 98765 43210", "organization": "ABC Corp" },
+    "existing_contacts": [{ "id": 102, "first_name": "Robert", "last_name": "Smith", "company_name": "US Tech", "primary_phone": "+1 9876543210" }],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Critical false merge if trailing 10 digits are blindly collapsed"
+  },
+  {
+    "id": "CASE-003",
+    "title": "Turkey +90 International Mobile Format",
+    "category": "international_phone",
+    "candidate_input": { "name": "Ahmet Yilmaz", "phone": "+90 532 123 4567", "email": "ahmet@istanbul.tr" },
+    "existing_contacts": [{ "id": 103, "first_name": "Ahmet", "last_name": "Yilmaz", "company_name": "Istanbul Software", "primary_phone": "+905321234567", "primary_email": "ahmet@istanbul.tr" }],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 103,
+    "danger_of_false_merge": "Fails if non-US country codes are stripped or corrupted"
+  },
+  {
+    "id": "CASE-004",
+    "title": "UK +44 Mobile Format Matching",
+    "category": "international_phone",
+    "candidate_input": { "name": "James Bond", "phone": "+44 7911 123456", "organization": "MI6" },
+    "existing_contacts": [{ "id": 104, "first_name": "James", "last_name": "Bond", "company_name": "MI6", "primary_phone": "+447911123456" }],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 104,
+    "danger_of_false_merge": "Fails if UK national leading zero format isn't normalized"
+  },
+  {
+    "id": "CASE-005",
+    "title": "Multiple Michaels - Shared Name Same Company (Ambiguous)",
+    "category": "ambiguous_identity",
+    "candidate_input": { "name": "Michael Scott", "organization": "Paper Co" },
+    "existing_contacts": [
+      { "id": 105, "first_name": "Michael", "last_name": "Scott", "company_name": "Paper Co", "primary_phone": "+11112223333" },
+      { "id": 106, "first_name": "Michael", "last_name": "Scott", "company_name": "Paper Co", "primary_phone": "+14445556666" }
+    ],
+    "expected_decision": "AMBIGUOUS",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Auto-merging different real people sharing identical name and company"
+  },
+  {
+    "id": "CASE-006",
+    "title": "Conflicting Identifiers - Phone matches Contact A, Email matches Contact B",
+    "category": "conflicting_identifier",
+    "candidate_input": { "name": "Alex Taylor", "phone": "+15551112222", "email": "alex.b@corporate.com" },
+    "existing_contacts": [
+      { "id": 107, "first_name": "Alex", "last_name": "Alpha", "primary_phone": "+15551112222", "primary_email": "alex.a@corporate.com" },
+      { "id": 108, "first_name": "Alex", "last_name": "Beta", "primary_phone": "+15559998888", "primary_email": "alex.b@corporate.com" }
+    ],
+    "expected_decision": "CONFLICT",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Merging two different people when phone and email belong to separate contacts"
+  },
+  {
+    "id": "CASE-007",
+    "title": "Shared Main Office Phone Number - Weaker Evidence",
+    "category": "shared_office_number",
+    "candidate_input": { "name": "John Doe", "phone": "+1 800 555 0100", "organization": "Global Corp" },
+    "existing_contacts": [
+      { "id": 109, "first_name": "Jane", "last_name": "Smith", "company_name": "Global Corp", "primary_phone": "+1 800 555 0100" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Merging colleagues who share a main corporate trunk line"
+  },
+  {
+    "id": "CASE-008",
+    "title": "Employer Transition - John Left IBM and Joined Amazon",
+    "category": "employer_change",
+    "candidate_input": { "name": "John Hudson", "organization": "Amazon" },
+    "existing_contacts": [
+      { "id": 110, "first_name": "John", "last_name": "Hudson", "company_name": "IBM", "primary_phone": "+15554443333" }
+    ],
+    "expected_decision": "PROBABLE_MATCH",
+    "expected_matched_contact_id": 110,
+    "danger_of_false_merge": "Rejecting valid match due to employer change or overwriting IBM completely"
+  },
+  {
+    "id": "CASE-009",
+    "title": "Nickname Matching - Bob for Robert",
+    "category": "nickname",
+    "candidate_input": { "name": "Bob Williams", "email": "robert.w@enterprise.org", "organization": "Enterprise" },
+    "existing_contacts": [
+      { "id": 111, "first_name": "Robert", "last_name": "Williams", "nickname": "Bob", "company_name": "Enterprise", "primary_email": "robert.w@enterprise.org" }
+    ],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 111,
+    "danger_of_false_merge": "Missed match when candidate uses nickname"
+  },
+  {
+    "id": "CASE-010",
+    "title": "Introducer & Contextual Matching",
+    "category": "introducer_match",
+    "candidate_input": { "name": "Sarah Connor", "introducer": "Kyle Reese", "organization": "Cyberdyne" },
+    "existing_contacts": [
+      { "id": 112, "first_name": "Sarah", "last_name": "Connor", "introduced_by_name": "Kyle Reese", "company_name": "Cyberdyne" }
+    ],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 112,
+    "danger_of_false_merge": "Missed match when phone/email are omitted"
+  },
+  {
+    "id": "CASE-011",
+    "title": "Totally New Person - No Shared Identifiers",
+    "category": "new_person",
+    "candidate_input": { "name": "Zoe Washburne", "phone": "+15559871234", "email": "zoe@firefly.com", "organization": "Serenity" },
+    "existing_contacts": [
+      { "id": 113, "first_name": "Malcolm", "last_name": "Reynolds", "primary_phone": "+15551110000" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "False positive match on sparse context"
+  },
+  {
+    "id": "CASE-012",
+    "title": "Sparse Context - Only Common First Name",
+    "category": "sparse_context",
+    "candidate_input": { "name": "David" },
+    "existing_contacts": [
+      { "id": 114, "first_name": "David", "last_name": "Beckham", "company_name": "Inter Miami" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Auto-merging on generic first names"
+  },
+  {
+    "id": "CASE-013",
+    "title": "Same Name Different Person - Different Email & Phone",
+    "category": "same_name_different_person",
+    "candidate_input": { "name": "John Smith", "phone": "+15558889999", "email": "john.smith.ny@gmail.com", "organization": "NY Media" },
+    "existing_contacts": [
+      { "id": 115, "first_name": "John", "last_name": "Smith", "primary_phone": "+15551112222", "primary_email": "john.smith.sf@gmail.com", "company_name": "SF Tech" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Merging common name variants across distinct accounts"
+  },
+  {
+    "id": "CASE-014",
+    "title": "Spouse / Partner Phone Conflict",
+    "category": "spouse_conflict",
+    "candidate_input": { "name": "Mary Johnson", "phone": "+15553334444", "organization": "Design Studio" },
+    "existing_contacts": [
+      { "id": 116, "first_name": "Peter", "last_name": "Johnson", "primary_phone": "+15553334444", "company_name": "Architects LLC" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "Merging spouses sharing a home landline"
+  },
+  {
+    "id": "CASE-015",
+    "title": "Geography / Company Conflict - Same Name",
+    "category": "geography_conflict",
+    "candidate_input": { "name": "Vikram Patel", "organization": "Patel Exports London", "phone": "+442079460912" },
+    "existing_contacts": [
+      { "id": 117, "first_name": "Vikram", "last_name": "Patel", "company_name": "Patel Trading Mumbai", "primary_phone": "+912228451122" }
+    ],
+    "expected_decision": "NEW_PERSON",
+    "expected_matched_contact_id": null,
+    "danger_of_false_merge": "False merge on common Indian name across UK vs India companies"
+  },
+  {
+    "id": "CASE-016",
+    "title": "Updated Personal Phone Number",
+    "category": "phone_change",
+    "candidate_input": { "name": "Elena Rostova", "phone": "+15557778888", "email": "elena@rostova.com" },
+    "existing_contacts": [
+      { "id": 118, "first_name": "Elena", "last_name": "Rostova", "primary_phone": "+15550001111", "primary_email": "elena@rostova.com" }
+    ],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 118,
+    "danger_of_false_merge": "Fails to match when email is exact but phone has changed"
+  },
+  {
+    "id": "CASE-017",
+    "title": "Updated Email Address",
+    "category": "email_change",
+    "candidate_input": { "name": "Carlos Gomez", "phone": "+1 212 555 0177", "email": "carlos.gomez@newcompany.com" },
+    "existing_contacts": [
+      { "id": 119, "first_name": "Carlos", "last_name": "Gomez", "primary_phone": "+1 212 555 0177", "primary_email": "carlos@oldcompany.com" }
+    ],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 119,
+    "danger_of_false_merge": "Fails to match when phone is exact but email has changed"
+  },
+  {
+    "id": "CASE-018",
+    "title": "Temporal Future Job Transition",
+    "category": "temporal_change",
+    "candidate_input": { "name": "Rachel Green", "organization": "Bloomingdales" },
+    "existing_contacts": [
+      { "id": 120, "first_name": "Rachel", "last_name": "Green", "company_name": "Central Perk", "primary_email": "rachel@fashion.com" }
+    ],
+    "expected_decision": "PROBABLE_MATCH",
+    "expected_matched_contact_id": 120,
+    "danger_of_false_merge": "Overwriting current job without preserving historical employment"
+  },
+  {
+    "id": "CASE-019",
+    "title": "Exact Email Match Without Name",
+    "category": "strong_identifier",
+    "candidate_input": { "email": "satya.n@microsoft.com", "organization": "Microsoft" },
+    "existing_contacts": [
+      { "id": 121, "first_name": "Satya", "last_name": "Nadella", "primary_email": "satya.n@microsoft.com" }
+    ],
+    "expected_decision": "MATCH",
+    "expected_matched_contact_id": 121,
+    "danger_of_false_merge": "Missed match when candidate name is missing"
+  },
+  {
+    "id": "CASE-020",
+    "title": "Malformed Phone Number - Raw Unverified Digit Match",
+    "category": "sparse_context",
+    "candidate_input": { "name": "Bruce Wayne", "phone": "WAYNE-CORP-99" },
+    "existing_contacts": [
+      { "id": 122, "first_name": "Bruce", "last_name": "Wayne", "company_name": "Wayne Enterprises" }
+    ],
+    "expected_decision": "PROBABLE_MATCH",
+    "expected_matched_contact_id": 122,
+    "danger_of_false_merge": "Crashing parser on non-numeric phone string"
+  },
+  { "id": "CASE-021", "title": "Case 21: Full Name & Company Exact Match", "category": "strong_identifier", "candidate_input": { "name": "Oliver Queen", "organization": "Queen Consolidated" }, "existing_contacts": [{ "id": 201, "first_name": "Oliver", "last_name": "Queen", "company_name": "Queen Consolidated" }], "expected_decision": "MATCH", "expected_matched_contact_id": 201, "danger_of_false_merge": "Low" },
+  { "id": "CASE-022", "title": "Case 22: UK Landline vs Mobile Comparison", "category": "international_phone", "candidate_input": { "name": "Charles Xavier", "phone": "+44 20 7946 0999" }, "existing_contacts": [{ "id": 202, "first_name": "Charles", "last_name": "Xavier", "primary_phone": "+44 20 7946 0999" }], "expected_decision": "MATCH", "expected_matched_contact_id": 202, "danger_of_false_merge": "Low" },
+  { "id": "CASE-023", "title": "Case 23: India Bangalore Mobile Match", "category": "international_phone", "candidate_input": { "name": "Nandan Nilekani", "phone": "+91 80 2852 0261" }, "existing_contacts": [{ "id": 203, "first_name": "Nandan", "last_name": "Nilekani", "primary_phone": "+91 80 2852 0261" }], "expected_decision": "MATCH", "expected_matched_contact_id": 203, "danger_of_false_merge": "Low" },
+  { "id": "CASE-024", "title": "Case 24: Turkey Ankara Phone Match", "category": "international_phone", "candidate_input": { "name": "Orhan Pamuk", "phone": "+90 312 417 0000" }, "existing_contacts": [{ "id": 204, "first_name": "Orhan", "last_name": "Pamuk", "primary_phone": "+90 312 417 0000" }], "expected_decision": "MATCH", "expected_matched_contact_id": 204, "danger_of_false_merge": "Low" },
+  { "id": "CASE-025", "title": "Case 25: First Name + Middle Name Match", "category": "identity", "candidate_input": { "name": "Arthur Conan Doyle" }, "existing_contacts": [{ "id": 205, "first_name": "Arthur", "last_name": "Doyle", "company_name": "Strand Magazine" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 205, "danger_of_false_merge": "Low" },
+  { "id": "CASE-026", "title": "Case 26: Conflicting Company Mismatch Heavy Penalty", "category": "conflicting_identifier", "candidate_input": { "name": "Tony Stark", "organization": "Hammer Tech", "email": "tony@hammer.com" }, "existing_contacts": [{ "id": 206, "first_name": "Tony", "last_name": "Stark", "company_name": "Stark Industries", "primary_email": "tony@stark.com" }], "expected_decision": "NEW_PERSON", "expected_matched_contact_id": null, "danger_of_false_merge": "High false merge on Tony Stark at different company with different email" },
+  { "id": "CASE-027", "title": "Case 27: Ambiguous - Two Sarahs at Same Firm", "category": "ambiguous_identity", "candidate_input": { "name": "Sarah Miller", "organization": "Law LLP" }, "existing_contacts": [{ "id": 207, "first_name": "Sarah", "last_name": "Miller", "company_name": "Law LLP" }, { "id": 208, "first_name": "Sarah", "last_name": "Miller", "company_name": "Law LLP" }], "expected_decision": "AMBIGUOUS", "expected_matched_contact_id": null, "danger_of_false_merge": "High" },
+  { "id": "CASE-028", "title": "Case 28: Introducer Match Only", "category": "introducer_match", "candidate_input": { "name": "Jim Halpert", "introducer": "Pam Beesly" }, "existing_contacts": [{ "id": 209, "first_name": "Jim", "last_name": "Halpert", "introduced_by_name": "Pam Beesly" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 209, "danger_of_false_merge": "Low" },
+  { "id": "CASE-029", "title": "Case 29: Partial Email Domain Matching Disallowed", "category": "conflicting_identifier", "candidate_input": { "name": "Dan Brown", "email": "dan@gmail.com" }, "existing_contacts": [{ "id": 210, "first_name": "Dan", "last_name": "Brown", "primary_email": "dan@yahoo.com" }], "expected_decision": "NEW_PERSON", "expected_matched_contact_id": null, "danger_of_false_merge": "Low" },
+  { "id": "CASE-030", "title": "Case 30: Honorific Stripping - Dr. Henry Walton", "category": "identity", "candidate_input": { "name": "Dr. Henry Walton", "organization": "Marshall College" }, "existing_contacts": [{ "id": 211, "first_name": "Henry", "last_name": "Walton", "company_name": "Marshall College" }], "expected_decision": "MATCH", "expected_matched_contact_id": 211, "danger_of_false_merge": "Low" },
+  { "id": "CASE-031", "title": "Case 31: Company Suffix Normalization - Inc vs LLC", "category": "identity", "candidate_input": { "name": "Peter Parker", "organization": "Daily Bugle Inc" }, "existing_contacts": [{ "id": 212, "first_name": "Peter", "last_name": "Parker", "company_name": "Daily Bugle LLC" }], "expected_decision": "MATCH", "expected_matched_contact_id": 212, "danger_of_false_merge": "Low" },
+  { "id": "CASE-032", "title": "Case 32: Unverified Digit Same Sequence Different Country", "category": "international_phone", "candidate_input": { "name": "Jean Dupont", "phone": "+33 1 42 68 53 00" }, "existing_contacts": [{ "id": 213, "first_name": "John", "last_name": "Dupont", "primary_phone": "+1 142685300" }], "expected_decision": "NEW_PERSON", "expected_matched_contact_id": null, "danger_of_false_merge": "High if country prefix is ignored" },
+  { "id": "CASE-033", "title": "Case 33: German +49 International Phone Match", "category": "international_phone", "candidate_input": { "name": "Hans Gruber", "phone": "+49 30 123456" }, "existing_contacts": [{ "id": 214, "first_name": "Hans", "last_name": "Gruber", "primary_phone": "+4930123456" }], "expected_decision": "MATCH", "expected_matched_contact_id": 214, "danger_of_false_merge": "Low" },
+  { "id": "CASE-034", "title": "Case 34: Japanese +81 International Phone Match", "category": "international_phone", "candidate_input": { "name": "Taro Yamada", "phone": "+81 3 1234 5678" }, "existing_contacts": [{ "id": 215, "first_name": "Taro", "last_name": "Yamada", "primary_phone": "+81312345678" }], "expected_decision": "MATCH", "expected_matched_contact_id": 215, "danger_of_false_merge": "Low" },
+  { "id": "CASE-035", "title": "Case 35: Australian +61 International Phone Match", "category": "international_phone", "candidate_input": { "name": "Steve Irwin", "phone": "+61 7 5436 2000" }, "existing_contacts": [{ "id": 216, "first_name": "Steve", "last_name": "Irwin", "primary_phone": "+61754362000" }], "expected_decision": "MATCH", "expected_matched_contact_id": 216, "danger_of_false_merge": "Low" },
+  { "id": "CASE-036", "title": "Case 36: French +33 International Mobile Match", "category": "international_phone", "candidate_input": { "name": "Amelie Poulain", "phone": "+33 6 12 34 56 78" }, "existing_contacts": [{ "id": 217, "first_name": "Amelie", "last_name": "Poulain", "primary_phone": "+33612345678" }], "expected_decision": "MATCH", "expected_matched_contact_id": 217, "danger_of_false_merge": "Low" },
+  { "id": "CASE-037", "title": "Case 37: Shared Toll-Free Number Weaker Match", "category": "shared_office_number", "candidate_input": { "name": "Alice Johnson", "phone": "+1 888 555 0199" }, "existing_contacts": [{ "id": 218, "first_name": "Bob", "last_name": "Marley", "primary_phone": "+1 888 555 0199" }], "expected_decision": "NEW_PERSON", "expected_matched_contact_id": null, "danger_of_false_merge": "High" },
+  { "id": "CASE-038", "title": "Case 38: Temporal Employer Transition - Oracle to Salesforce", "category": "employer_change", "candidate_input": { "name": "Marc Benioff", "organization": "Salesforce" }, "existing_contacts": [{ "id": 219, "first_name": "Marc", "last_name": "Benioff", "company_name": "Oracle" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 219, "danger_of_false_merge": "Low" },
+  { "id": "CASE-039", "title": "Case 39: Temporal Employer Transition - Disney to Pixar", "category": "employer_change", "candidate_input": { "name": "John Lasseter", "organization": "Pixar" }, "existing_contacts": [{ "id": 220, "first_name": "John", "last_name": "Lasseter", "company_name": "Disney" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 220, "danger_of_false_merge": "Low" },
+  { "id": "CASE-040", "title": "Case 40: Middle Initial Variation", "category": "identity", "candidate_input": { "name": "George R. R. Martin" }, "existing_contacts": [{ "id": 221, "first_name": "George", "last_name": "Martin", "company_name": "Bantam Books" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 221, "danger_of_false_merge": "Low" },
+  { "id": "CASE-041", "title": "Case 41: Phone and Email Both Match Perfectly", "category": "strong_identifier", "candidate_input": { "name": "Elon Musk", "phone": "+15559990000", "email": "elon@x.com" }, "existing_contacts": [{ "id": 222, "first_name": "Elon", "last_name": "Musk", "primary_phone": "+15559990000", "primary_email": "elon@x.com" }], "expected_decision": "MATCH", "expected_matched_contact_id": 222, "danger_of_false_merge": "Low" },
+  { "id": "CASE-042", "title": "Case 42: Common Name John Howard - Different Companies", "category": "same_name_different_person", "candidate_input": { "name": "John Howard", "organization": "Sydney Law" }, "existing_contacts": [{ "id": 223, "first_name": "John", "last_name": "Howard", "company_name": "Canberra Govt" }], "expected_decision": "PROBABLE_MATCH", "expected_matched_contact_id": 223, "danger_of_false_merge": "Moderate" },
+  { "id": "CASE-043", "title": "Case 43: Spanish +34 International Phone Match", "category": "international_phone", "candidate_input": { "name": "Rafael Nadal", "phone": "+34 91 123 4567" }, "existing_contacts": [{ "id": 224, "first_name": "Rafael", "last_name": "Nadal", "primary_phone": "+34911234567" }], "expected_decision": "MATCH", "expected_matched_contact_id": 224, "danger_of_false_merge": "Low" },
+  { "id": "CASE-044", "title": "Case 44: Brazilian +55 International Phone Match", "category": "international_phone", "candidate_input": { "name": "Ayrton Senna", "phone": "+55 11 98765 4321" }, "existing_contacts": [{ "id": 225, "first_name": "Ayrton", "last_name": "Senna", "primary_phone": "+5511987654321" }], "expected_decision": "MATCH", "expected_matched_contact_id": 225, "danger_of_false_merge": "Low" },
+  { "id": "CASE-045", "title": "Case 45: Nickname Bill for William", "category": "nickname", "candidate_input": { "name": "Bill Gates", "email": "billg@gatesfoundation.org" }, "existing_contacts": [{ "id": 226, "first_name": "William", "last_name": "Gates", "nickname": "Bill", "primary_email": "billg@gatesfoundation.org" }], "expected_decision": "MATCH", "expected_matched_contact_id": 226, "danger_of_false_merge": "Low" },
+  { "id": "CASE-046", "title": "Case 46: Nickname Jim for James", "category": "nickname", "candidate_input": { "name": "Jim Kirk", "organization": "Starfleet" }, "existing_contacts": [{ "id": 227, "first_name": "James", "last_name": "Kirk", "nickname": "Jim", "company_name": "Starfleet" }], "expected_decision": "MATCH", "expected_matched_contact_id": 227, "danger_of_false_merge": "Low" },
+  { "id": "CASE-047", "title": "Case 47: Sparse Name Input - Smith Only", "category": "sparse_context", "candidate_input": { "name": "Smith" }, "existing_contacts": [{ "id": 228, "first_name": "Adam", "last_name": "Smith", "company_name": "Economics Institute" }], "expected_decision": "NEW_PERSON", "expected_matched_contact_id": null, "danger_of_false_merge": "High" },
+  { "id": "CASE-048", "title": "Case 48: Conflicting Email & Phone - Distinct Contacts", "category": "conflicting_identifier", "candidate_input": { "name": "Chris Chris", "phone": "+15550001111", "email": "chris.b@corp.com" }, "existing_contacts": [{ "id": 229, "first_name": "Chris", "last_name": "Alpha", "primary_phone": "+15550001111" }, { "id": 230, "first_name": "Chris", "last_name": "Beta", "primary_email": "chris.b@corp.com" }], "expected_decision": "CONFLICT", "expected_matched_contact_id": null, "danger_of_false_merge": "Critical" },
+  { "id": "CASE-049", "title": "Case 49: Italian +39 International Mobile Match", "category": "international_phone", "candidate_input": { "name": "Enzo Ferrari", "phone": "+39 059 205111" }, "existing_contacts": [{ "id": 231, "first_name": "Enzo", "last_name": "Ferrari", "primary_phone": "+39059205111" }], "expected_decision": "MATCH", "expected_matched_contact_id": 231, "danger_of_false_merge": "Low" },
+  { "id": "CASE-050", "title": "Case 50: Canadian +1 E.164 Phone Match", "category": "international_phone", "candidate_input": { "name": "Wayne Gretzky", "phone": "+1 416 555 9999" }, "existing_contacts": [{ "id": 232, "first_name": "Wayne", "last_name": "Gretzky", "primary_phone": "+14165559999" }], "expected_decision": "MATCH", "expected_matched_contact_id": 232, "danger_of_false_merge": "Low" },
+  { "id": "CASE-051", "title": "Case 51: Netherlands +31 International Mobile Match", "category": "international_phone", "candidate_input": { "name": "Max Verstappen", "phone": "+31 6 12345678" }, "existing_contacts": [{ "id": 233, "first_name": "Max", "last_name": "Verstappen", "primary_phone": "+31612345678" }], "expected_decision": "MATCH", "expected_matched_contact_id": 233, "danger_of_false_merge": "Low" },
+  { "id": "CASE-052", "title": "Case 52: Swiss +41 International Mobile Match", "category": "international_phone", "candidate_input": { "name": "Roger Federer", "phone": "+41 79 123 4567" }, "existing_contacts": [{ "id": 234, "first_name": "Roger", "last_name": "Federer", "primary_phone": "+41791234567" }], "expected_decision": "MATCH", "expected_matched_contact_id": 234, "danger_of_false_merge": "Low" }
+]
