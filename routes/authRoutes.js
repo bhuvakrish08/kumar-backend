@@ -20,6 +20,7 @@ async function ensureUserColumnsExist(pool) {
     { col: 'name', spec: 'VARCHAR(255) DEFAULT NULL' },
     { col: 'password', spec: 'VARCHAR(255) DEFAULT NULL' },
     { col: 'password_hash', spec: 'VARCHAR(255) DEFAULT NULL' },
+    { col: 'phone_region', spec: 'VARCHAR(2) DEFAULT NULL' },
   ];
 
   for (const { col, spec } of columnsToAdd) {
@@ -32,6 +33,39 @@ async function ensureUserColumnsExist(pool) {
       // Ignore if column check fails
     }
   }
+}
+
+// Helper function to detect if connection is HTTPS (including behind reverse proxies)
+function isRequestSecure(req) {
+  if (req.secure) return true;
+  const proto = req.headers['x-forwarded-proto'];
+  if (proto && (proto === 'https' || proto.startsWith('https'))) return true;
+  if (req.headers['x-forwarded-ssl'] === 'on') return true;
+  if (req.headers['front-end-https'] === 'on') return true;
+  if (req.headers['x-url-scheme'] === 'https') return true;
+  const host = req.headers.host || '';
+  if (process.env.NODE_ENV === 'production' && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+    return true;
+  }
+  return false;
+}
+
+// Session cookie options supporting cross-origin live production environments
+function getSessionCookieOptions(req) {
+  const isHttps = isRequestSecure(req);
+  return {
+    httpOnly: true,
+    secure: isHttps,
+    sameSite: isHttps ? 'none' : 'lax',
+    path: '/',
+    maxAge: 14 * 24 * 60 * 60 * 1000,
+  };
+}
+
+function getClearCookieOptions(req) {
+  const opts = getSessionCookieOptions(req);
+  delete opts.maxAge;
+  return opts;
 }
 
 // ======================================================
@@ -98,15 +132,9 @@ router.post('/register', async (req, res) => {
 
     const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
 
-    // Store token in HTTP-Only Cookie
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie(COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/',
-      maxAge: 14 * 24 * 60 * 60 * 1000,
-    });
+    // Store token in HTTP-Only Cookie with resilient cross-domain options
+    const cookieOpts = getSessionCookieOptions(req);
+    res.cookie(COOKIE_NAME, token, cookieOpts);
 
     return res.status(201).json({
       message: 'Registered and logged in successfully',
@@ -167,14 +195,8 @@ router.post('/login', async (req, res) => {
 
     const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
 
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie(COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/',
-      maxAge: 14 * 24 * 60 * 60 * 1000,
-    });
+    const cookieOpts = getSessionCookieOptions(req);
+    res.cookie(COOKIE_NAME, token, cookieOpts);
 
     // Secure response: do NOT return JWT token in JSON response
     return res.status(200).json({
@@ -193,13 +215,8 @@ router.post('/login', async (req, res) => {
 // ======================================================
 router.post('/logout', (req, res) => {
   try {
-    const isProd = process.env.NODE_ENV === 'production';
-    res.clearCookie(COOKIE_NAME, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/',
-    });
+    const clearOpts = getClearCookieOptions(req);
+    res.clearCookie(COOKIE_NAME, clearOpts);
     return res.status(200).json({ message: 'Logged out successfully' });
   } catch (err) {
     return res.status(500).json({ error: 'Failed to logout' });
@@ -273,14 +290,8 @@ async function handleChangePassword(req, res) {
 
     const token = jwt.sign(tokenPayload, getSecret(), { expiresIn: '14d' });
 
-    const isProd = process.env.NODE_ENV === 'production';
-    res.cookie(COOKIE_NAME, token, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
-      path: '/',
-      maxAge: 14 * 24 * 60 * 60 * 1000,
-    });
+    const cookieOpts = getSessionCookieOptions(req);
+    res.cookie(COOKIE_NAME, token, cookieOpts);
 
     return res.status(200).json({
       message: 'Password updated successfully!',

@@ -32,6 +32,9 @@ const { isKeyConfigured } = require('./lib/geminiAdapter');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust reverse proxy (Crucial for Hostinger, Nginx, Apache, Cloudflare SSL termination)
+app.set('trust proxy', 1);
+
 // Correlation ID & telemetry middleware
 app.use(correlationMiddleware);
 
@@ -39,26 +42,54 @@ app.use(correlationMiddleware);
 app.use('/uploads', express.static(getUploadDir()));
 
 // CORS configuration supporting credentials (cookies)
-const allowedOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim())
+const rawOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim().replace(/\/+$/, ''))
   : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'];
+
+const isWildcardOrigin = rawOrigins.includes('*');
 
 app.use(cors({
   origin: function (origin, callback) {
     // allow requests with no origin (like mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
+
+    const cleanOrigin = origin.replace(/\/+$/, '');
+
+    // If CORS_ORIGIN is '*' or contains wildcard, dynamically reflect the origin with credentials
+    if (isWildcardOrigin) {
       return callback(null, true);
     }
+
+    if (rawOrigins.includes(cleanOrigin)) {
+      return callback(null, true);
+    }
+
     // In development mode, allow localhost and 127.0.0.1 on any port
-    if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) {
       return callback(null, true);
     }
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+
+    // Automatically permit Vercel deployment preview and production domains
+    if (/\.vercel\.app$/.test(cleanOrigin)) {
+      return callback(null, true);
+    }
+
+    // Gracefully decline origin without throwing unhandled server error
+    console.warn(`[CORS] Origin blocked: ${cleanOrigin}`);
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-Requested-With', 'X-Correlation-Id', 'x-correlation-id']
+  allowedHeaders: [
+    'Content-Type',
+    'X-Requested-With',
+    'X-Correlation-Id',
+    'x-correlation-id',
+    'Accept',
+    'Cache-Control',
+    'Pragma'
+  ],
+  exposedHeaders: ['Set-Cookie', 'X-Correlation-Id', 'x-correlation-id']
 }));
 
 // Body & Cookie Parsers
