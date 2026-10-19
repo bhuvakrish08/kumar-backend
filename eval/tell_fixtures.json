@@ -1,0 +1,357 @@
+[
+  {
+    "id": "TELL-001",
+    "title": "Shorthand and messy punctuation",
+    "raw_content": "met dave (vpe techcorp) @ conf; ph: +1 415 555 0199; owes me deck by tomorrow",
+    "expected": {
+      "person_name": "Dave",
+      "company": "Techcorp",
+      "phone_present": true,
+      "commitments_count": 1,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "shorthand_punctuation"
+  },
+  {
+    "id": "TELL-002",
+    "title": "Casual casing and abbreviations",
+    "raw_content": "hey kumar... satya at msft called!! email: satya@microsoft.com ph: +1 425 555 0100 -- follow up next week",
+    "expected": {
+      "person_name": "Satya",
+      "company": "Msft",
+      "email": "satya@microsoft.com",
+      "commitments_count": 1,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "casual_casing"
+  },
+  {
+    "id": "TELL-003",
+    "title": "Nickname resolution with formal name in parentheses",
+    "raw_content": "Met Bob (Robert Smith) from Goldman Sachs; bob.smith@gs.com; ph: +1 212 555 0177",
+    "expected": {
+      "person_name": "Bob",
+      "email": "bob.smith@gs.com",
+      "company": "Goldman Sachs",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "nickname"
+  },
+  {
+    "id": "TELL-004",
+    "title": "Multiple facts in single input stream",
+    "raw_content": "Met Dr. Sanjay Patel, Chief of Cardiology at Metro Hospital. Phone: +1 312 555 0122, email: sanjay@metrohealth.org. Introduced by Sarah Jenkins at medical summit today. Will send research whitepaper.",
+    "expected": {
+      "person_name": "Sanjay Patel",
+      "company": "Metro Hospital",
+      "introducer": "Sarah Jenkins",
+      "commitments_count": 1,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "multiple_facts"
+  },
+  {
+    "id": "TELL-005",
+    "title": "Missing phone number (email-only)",
+    "raw_content": "Met Priya Nair, lead designer at Digiva. Her email is priya@digiva.io. Met at design meetup.",
+    "expected": {
+      "person_name": "Priya Nair",
+      "email": "priya@digiva.io",
+      "phone": null,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "missing_phone"
+  },
+  {
+    "id": "TELL-006",
+    "title": "Missing email address (phone-only)",
+    "raw_content": "Met Marco Rossi, VP of Operations at Ferrari. Mobile: +39 02 5555 1234. No email given.",
+    "expected": {
+      "person_name": "Marco Rossi",
+      "phone_present": true,
+      "email": null,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "missing_email"
+  },
+  {
+    "id": "TELL-007",
+    "title": "UK International Phone Number",
+    "raw_content": "Met Oliver Twist, director at London Tech Co. Phone is +44 7400 123456. Met in London.",
+    "expected": {
+      "person_name": "Oliver Twist",
+      "phone_normalized": "+447400123456",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "international_phone"
+  },
+  {
+    "id": "TELL-008",
+    "title": "Turkey International Phone Number",
+    "raw_content": "Met Mehmet Yilmaz at Istanbul Summit. His mobile is +90 532 123 4567 and email mehmet@bosphorus.com.tr",
+    "expected": {
+      "person_name": "Mehmet Yilmaz",
+      "phone_normalized": "+905321234567",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "international_phone"
+  },
+  {
+    "id": "TELL-009",
+    "title": "India International Phone Number",
+    "raw_content": "Met Rajesh Gupta, founder of Gujarat Logistics. Call him at +91 98250 12345. Met in Ahmedabad.",
+    "expected": {
+      "person_name": "Rajesh Gupta",
+      "phone_normalized": "+919825012345",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "international_phone"
+  },
+  {
+    "id": "TELL-010",
+    "title": "Approximate and relative temporal expressions",
+    "raw_content": "Spoke with Arthur Dent. He used to work at BBC years ago. May join Galactic Media next month.",
+    "expected": {
+      "person_name": "Arthur Dent",
+      "has_temporal_transition": true,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "approximate_dates"
+  },
+  {
+    "id": "TELL-011",
+    "title": "Employer transition: IBM to Amazon",
+    "raw_content": "John left IBM and joined Amazon. Needs review of current employer transition.",
+    "expected": {
+      "person_name": "John",
+      "is_employer_change": true,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "employer_change"
+  },
+  {
+    "id": "TELL-012",
+    "title": "Employer transition with explicit dates: Cisco to Google",
+    "raw_content": "Susan left Cisco in June and joined Google on July 1.",
+    "expected": {
+      "person_name": "Susan",
+      "is_employer_change": true,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "employer_change_with_dates"
+  },
+  {
+    "id": "TELL-013",
+    "title": "Phone transition: His new mobile is X",
+    "raw_content": "Spoke with David Miller. His new mobile is +1 415 555 0188.",
+    "expected": {
+      "person_name": "David Miller",
+      "phone_present": true,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "phone_change"
+  },
+  {
+    "id": "TELL-014",
+    "title": "Expected item commitment extraction",
+    "raw_content": "Met Alice Walker at FinTech Expo. She will send the revised pricing schedule by tomorrow.",
+    "expected": {
+      "person_name": "Alice Walker",
+      "commitments_count": 1,
+      "commitment_type": "expected_item",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "commitments"
+  },
+  {
+    "id": "TELL-015",
+    "title": "Appointment commitment extraction",
+    "raw_content": "Talked to Carlos Santana. Will schedule product demo on Friday at 2pm.",
+    "expected": {
+      "person_name": "Carlos Santana",
+      "commitments_count": 1,
+      "commitment_type": "appointment",
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "commitments"
+  },
+  {
+    "id": "TELL-016",
+    "title": "Reminder task extraction",
+    "raw_content": "Remind me to follow up with Frank Castle next week regarding the security audit report.",
+    "expected": {
+      "person_name": "Frank Castle",
+      "commitments_count": 1,
+      "decision_family": ["MATCH", "PROBABLE_MATCH", "NO_MATCH", "NEW_PERSON"]
+    },
+    "category": "commitments"
+  },
+  {
+    "id": "TELL-017",
+    "title": "Ambiguous Identity: Common first name with multiple existing candidates",
+    "raw_content": "Had lunch with Michael today from Sales. Great conversation.",
+    "setup_candidates": [
+      { "first_name": "Michael", "last_name": "Jordan", "company_name": "Nike" },
+      { "first_name": "Michael", "last_name": "Scott", "company_name": "Dunder Mifflin" }
+    ],
+    "expected": {
+      "must_trigger_ambiguity": true,
+      "decision": "AMBIGUOUS"
+    },
+    "category": "ambiguity_or_conflict"
+  },
+  {
+    "id": "TELL-018",
+    "title": "Ambiguous Identity: Name with no identifiers matching two contacts",
+    "raw_content": "Connected with Alex at the reception. Promised to chat soon.",
+    "setup_candidates": [
+      { "first_name": "Alex", "last_name": "Ferguson", "company_name": "Man Utd" },
+      { "first_name": "Alex", "last_name": "Turner", "company_name": "Arctic Co" }
+    ],
+    "expected": {
+      "must_trigger_ambiguity": true,
+      "decision": "AMBIGUOUS"
+    },
+    "category": "ambiguity_or_conflict"
+  },
+  {
+    "id": "TELL-019",
+    "title": "Ambiguous Identity: Unprefixed local phone without country context",
+    "raw_content": "Met John at summit. Phone is 5551234567.",
+    "setup_candidates": [
+      { "first_name": "John", "last_name": "UK", "primary_phone": "+445551234567" },
+      { "first_name": "John", "last_name": "US", "primary_phone": "+15551234567" }
+    ],
+    "expected": {
+      "must_trigger_ambiguity": true,
+      "decision_family": ["AMBIGUOUS", "NO_MATCH"]
+    },
+    "category": "ambiguity_or_conflict"
+  },
+  {
+    "id": "TELL-020",
+    "title": "Conflict Identity: Split cross-contact identifiers (phone vs email)",
+    "raw_content": "Met Jordan Belfort, phone: +1 555 888 0000, email: jordan@investments.com",
+    "setup_candidates": [
+      {
+        "id": 401,
+        "first_name": "Jordan",
+        "last_name": "Belfort",
+        "primary_phone": "+1 555 888 0000",
+        "primary_email": "other@investments.com"
+      },
+      {
+        "id": 402,
+        "first_name": "Jordan",
+        "last_name": "Belfort",
+        "primary_phone": "+1 555 999 0000",
+        "primary_email": "jordan@investments.com"
+      }
+    ],
+    "expected": {
+      "must_trigger_conflict": true,
+      "decision": "CONFLICT"
+    },
+    "category": "ambiguity_or_conflict"
+  },
+  {
+    "id": "TELL-021",
+    "title": "Conflict Identity: Split cross-contact identifiers with different phone and email targets",
+    "raw_content": "Met Sarah Jenkins, phone: +1 415 555 1111, email: sjenkins@microsoft.com",
+    "setup_candidates": [
+      {
+        "id": 403,
+        "first_name": "Sarah",
+        "last_name": "Jenkins",
+        "primary_phone": "+1 415 555 1111",
+        "primary_email": "sarah@apple.com"
+      },
+      {
+        "id": 404,
+        "first_name": "Sarah",
+        "last_name": "Jenkins",
+        "primary_phone": "+1 415 555 2222",
+        "primary_email": "sjenkins@microsoft.com"
+      }
+    ],
+    "expected": {
+      "must_trigger_conflict": true,
+      "decision_family": ["CONFLICT", "AMBIGUOUS"]
+    },
+    "category": "ambiguity_or_conflict"
+  },
+  {
+    "id": "TELL-022",
+    "title": "Contextual Resolution: Organization and Introducer only",
+    "raw_content": "Met the founder at Digiva. Introduced by Larry.",
+    "setup_candidates": [
+      {
+        "first_name": "Digiva",
+        "last_name": "Founder",
+        "company_name": "Digiva",
+        "introduced_by_name": "Larry"
+      }
+    ],
+    "expected": {
+      "requires_contextual_resolution": true,
+      "decision_family": ["PROBABLE_MATCH", "AMBIGUOUS", "NO_MATCH"]
+    },
+    "category": "contextual_resolution"
+  },
+  {
+    "id": "TELL-023",
+    "title": "Contextual Resolution: Job title and meeting venue without full name",
+    "raw_content": "Spoke with the Chief Architect at Oracle we met at the London tech summit.",
+    "setup_candidates": [
+      {
+        "first_name": "Larry",
+        "last_name": "Ellison",
+        "job_title": "Chief Architect",
+        "company_name": "Oracle",
+        "met_place": "London"
+      }
+    ],
+    "expected": {
+      "requires_contextual_resolution": true,
+      "decision_family": ["PROBABLE_MATCH", "AMBIGUOUS", "NO_MATCH"]
+    },
+    "category": "contextual_resolution"
+  },
+  {
+    "id": "TELL-024",
+    "title": "Contextual Resolution: First name and company project context",
+    "raw_content": "Talked to Priya working with Amazon on the cloud migration project.",
+    "setup_candidates": [
+      {
+        "first_name": "Priya",
+        "last_name": "Sharma",
+        "company_name": "CloudCo",
+        "personal_notes": "Works with Amazon on cloud project"
+      }
+    ],
+    "expected": {
+      "requires_contextual_resolution": true,
+      "decision_family": ["PROBABLE_MATCH", "AMBIGUOUS", "NO_MATCH"]
+    },
+    "category": "contextual_resolution"
+  },
+  {
+    "id": "TELL-025",
+    "title": "Contextual Resolution: Introducer and interest clues",
+    "raw_content": "The single malt whisky enthusiast that Larry introduced at Highland Club.",
+    "setup_candidates": [
+      {
+        "first_name": "Duncan",
+        "last_name": "Macallan",
+        "company_name": "Highland Co",
+        "introduced_by_name": "Larry",
+        "interests": "Enjoys fine single malt whisky"
+      }
+    ],
+    "expected": {
+      "requires_contextual_resolution": true,
+      "decision_family": ["PROBABLE_MATCH", "AMBIGUOUS", "NO_MATCH"]
+    },
+    "category": "contextual_resolution"
+  }
+]

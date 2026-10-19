@@ -1,3 +1,4 @@
+require('dotenv').config();
 const http = require('http');
 const express = require('express');
 const { getPool } = require('./db');
@@ -13,12 +14,20 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const tellDossierRoutes = require('./routes/tellDossierRoutes');
 const commitmentRoutes = require('./routes/commitmentRoutes');
 const askDossierRoutes = require('./routes/askDossierRoutes');
+const demoRoutes = require('./routes/demoRoutes');
 
 const { resolveIdentity } = require('./lib/identityResolution');
 const { parseAndNormalizePhone, comparePhones } = require('./lib/phoneNormalization');
 const { validateCandidateFactSet } = require('./lib/aiSchemaValidation');
 const { analyzeTemporalTransitions } = require('./lib/temporalReconciliation');
 const { runDrieEvaluation } = require('./eval/run_drie_eval');
+const { runTemporalEvaluation } = require('./eval/run_temporal_eval');
+const { runTellEvaluation } = require('./eval/run_tell_eval');
+const { runAskEvaluation } = require('./eval/run_ask_eval');
+const { runSecurityRegressionTests } = require('./eval/run_security_regression');
+const { runPerformanceBenchmark } = require('./eval/run_performance_test');
+const { runDemoScenarios } = require('./eval/run_demo_scenarios');
+const { verifyMigrations } = require('./scripts/verify_migrations');
 
 // Create test application
 const app = express();
@@ -34,6 +43,7 @@ app.use('/api/v1/upload', uploadRoutes);
 app.use('/api/v1/tell-dossier', tellDossierRoutes);
 app.use('/api/v1/commitments', commitmentRoutes);
 app.use('/api/v1/ask-dossier', askDossierRoutes);
+app.use('/api/v1/demo', demoRoutes);
 
 function request(server, method, path, headers = {}, body = null) {
   return new Promise((resolve, reject) => {
@@ -180,6 +190,7 @@ async function runTests() {
     // TEST 6: User A Contact & Dossier Data Creation
     // ---------------------------------------------------------------
     console.log('6️⃣ Testing User A Contact Creation...');
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name = "David"');
     const c1Res = await request(server, 'POST', '/api/v1/contacts', headersA, {
       first_name: 'David',
       last_name: 'Miller',
@@ -321,10 +332,21 @@ async function runTests() {
     // TEST 13: Ask Dossier Canonical Natural Language Queries
     // ---------------------------------------------------------------
     console.log('1️⃣3️⃣ Testing Ask Dossier Canonical Natural Language Queries...');
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name = "David" AND id != ?', [contactIdA]);
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name IN ("John", "Larry", "Rahul")');
     await pool.query(
       `INSERT INTO contacts (owner_user_id, created_by, first_name, last_name, company_name, primary_phone, introduced_by_name, personal_notes)
        VALUES (2, 2, 'John', 'Doe', 'Consulting Co', '5550001111', 'Sarah Jenkins', 'Met at tech summit'),
               (2, 2, 'Larry', 'Ellison', 'IBM', '5552223333', 'Direct', 'Enjoys fine single malt whisky')`
+    );
+    const [rRes] = await pool.query(
+      `INSERT INTO contacts (owner_user_id, created_by, first_name, last_name, company_name)
+       VALUES (2, 2, 'Rahul', 'Sharma', 'ABC Corp')`
+    );
+    await pool.query(
+      `INSERT INTO commitments (owner_user_id, contact_id, title, details, status, type)
+       VALUES (2, ?, 'Send updated pricing schedule', 'Rahul is expected to provide Q4 pricing quote', 'OPEN', 'expected_item')`,
+      [rRes.insertId]
     );
 
     const q1 = await request(server, 'POST', '/api/v1/ask-dossier', headersA, { query: "What is David's cell?" });
@@ -369,94 +391,203 @@ async function runTests() {
     console.log('   ✅ Verified no API keys, SESSION_SECRET, or internal prompts are exposed.');
 
     // ---------------------------------------------------------------
-    // TEST 15: Safe International Phone Normalization Suite
+    // TEST 15: Safe International Phone Normalization Suite (10 Required Cases)
     // ---------------------------------------------------------------
-    console.log('1️⃣5️⃣ Testing Safe International Phone Normalization (US, UK, Turkey, India, Country Mismatch)...');
-    const normUS = parseAndNormalizePhone('+1 (212) 654-3210');
-    if (normUS.e164 !== '+12126543210' || normUS.country !== 'US') throw new Error(`Phone Normalization US failed! Got: ${JSON.stringify(normUS)}`);
+    console.log('1️⃣5️⃣ Testing Safe International Phone Normalization (10 Required Cases)...');
+    // 1. US local format normalizes correctly with US region
+    const p1 = parseAndNormalizePhone('(212) 654-3210', 'US');
+    if (p1.e164 !== '+12126543210' || p1.country !== 'US' || !p1.isValid) throw new Error('Phone Test 1 Failed: US local format');
 
-    const normIN = parseAndNormalizePhone('+91 98765 43210');
-    if (normIN.e164 !== '+919876543210' || normIN.country !== 'IN') throw new Error('Phone Normalization India failed!');
+    // 2. Turkish local format normalizes correctly with Turkey region
+    const p2 = parseAndNormalizePhone('532 123 4567', 'TR');
+    if (p2.e164 !== '+905321234567' || p2.country !== 'TR' || !p2.isValid) throw new Error('Phone Test 2 Failed: Turkey local format');
 
-    const normTR = parseAndNormalizePhone('+90 532 123 4567');
-    if (normTR.e164 !== '+905321234567' || normTR.country !== 'TR') throw new Error('Phone Normalization Turkey failed!');
+    // 3. UK local format normalizes correctly with UK region
+    const p3 = parseAndNormalizePhone('07400 123456', 'GB');
+    if (p3.e164 !== '+447400123456' || p3.country !== 'GB' || !p3.isValid) throw new Error('Phone Test 3 Failed: UK local format');
 
-    const normUK = parseAndNormalizePhone('+44 7400 123456');
-    if (normUK.e164 !== '+447400123456' || normUK.country !== 'GB') throw new Error(`Phone Normalization UK failed! Got: ${JSON.stringify(normUK)}`);
+    // 4. Indian local format normalizes correctly with India region
+    const p4 = parseAndNormalizePhone('98765 43210', 'IN');
+    if (p4.e164 !== '+919876543210' || p4.country !== 'IN' || !p4.isValid) throw new Error('Phone Test 4 Failed: India local format');
 
-    // Compare same trailing digits with different country codes (+91 vs +1) -> Must NOT match!
-    const diffCountryComp = comparePhones('+91 9876543210', '+1 9876543210');
-    if (diffCountryComp.match) throw new Error('Security Failure: Trailing digits collapsed different country codes (+91 vs +1)!');
-    console.log('   ✅ International phone normalization validated across US, UK, Turkey, India, and country code mismatches.');
+    // 5. Unprefixed 10-digit number with no known region remains unverified
+    const p5 = parseAndNormalizePhone('9876543210', null);
+    if (p5.isValid || p5.e164 !== null || p5.numberType !== 'UNVERIFIED') throw new Error('Phone Test 5 Failed: Unprefixed number must remain unverified');
+
+    // 6. Explicit +90, +44, +91, and +1 numbers work regardless of user region
+    const p6a = parseAndNormalizePhone('+90 532 123 4567', 'US');
+    const p6b = parseAndNormalizePhone('+44 7911 123456', 'IN');
+    const p6c = parseAndNormalizePhone('+91 98765 43210', 'GB');
+    const p6d = parseAndNormalizePhone('+1 (212) 654-3210', 'TR');
+    if (p6a.e164 !== '+905321234567' || p6b.e164 !== '+447911123456' || p6c.e164 !== '+919876543210' || p6d.e164 !== '+12126543210') {
+      throw new Error('Phone Test 6 Failed: Explicit + numbers must work regardless of region');
+    }
+
+    // 7. Identical trailing digits under different country codes never match
+    const p7 = comparePhones('+91 9876543210', '+1 9876543210');
+    if (p7.match) throw new Error('Phone Test 7 Failed: Trailing digits matched across different country codes (+91 vs +1)!');
+
+    // 8. Raw values remain available after normalization
+    if (p1.raw !== '(212) 654-3210' || p5.raw !== '9876543210') throw new Error('Phone Test 8 Failed: Raw values missing');
+
+    // 9. Shared-office numbers do not independently establish identity
+    const p9 = comparePhones('+1 800 555 0199', '+1 800 555 0199');
+    if (!p9.isSharedOffice && p9.confidence !== 'SHARED_OFFICE' && p9.score > 20) throw new Error('Phone Test 9 Failed: Shared office score too high');
+
+    // 10. Invalid numbers cannot be upgraded to verified ownership
+    const p10 = parseAndNormalizePhone('invalid123', 'US');
+    if (p10.isValid || p10.isVerifiedPersonal) throw new Error('Phone Test 10 Failed: Invalid number upgraded');
+    console.log('   ✅ All 10 mandatory phone normalization and region tests passed.');
 
     // ---------------------------------------------------------------
-    // TEST 16: Strict AI Output Validation & Injection Prevention
+    // TEST 16: Strict AI Output Validation & Malformed Provider Tests (10 Cases)
     // ---------------------------------------------------------------
-    console.log('1️⃣6️⃣ Testing Strict CandidateFactSet Validation & Malicious Field Injection Protection...');
-    const maliciousAIResult = {
-      person: { name: 'Attacker', email: 'attacker@evil.com' },
-      owner_user_id: 99999, // Attempted IDOR injection
+    console.log('1️⃣6️⃣ Testing Strict AI Schema Validation (10 Malformed Provider Tests)...');
+    // 1. Forbidden root-level identifier rejected
+    const m1 = validateCandidateFactSet({ person: { name: 'Test' }, owner_user_id: 2 });
+    if (m1.isValid || !m1.errors.some(e => e.includes('owner_user_id'))) throw new Error('Schema Test 1 Failed: Forbidden root key allowed');
+
+    // 2. Forbidden nested identifier rejected
+    const m2 = validateCandidateFactSet({ person: { name: 'Test', database_id: 123 } });
+    if (m2.isValid || !m2.errors.some(e => e.includes('database_id'))) throw new Error('Schema Test 2 Failed: Nested forbidden key allowed');
+
+    // 3. Oversized arrays rejected with explicit issue (never silently truncated)
+    const bigSources = Array(25).fill('source-tag');
+    const m3 = validateCandidateFactSet({ person: { name: 'Test' }, sources: bigSources });
+    if (m3.isValid || !m3.errors.some(e => e.includes('exceeds maximum allowed size'))) throw new Error('Schema Test 3 Failed: Oversized array was not rejected');
+
+    // 4. Invalid nested emails in people[] rejected
+    const m4 = validateCandidateFactSet({
+      person: { name: 'Test' },
+      people: [{ name: 'Colleague', email: 'not-an-email' }]
+    });
+    if (m4.isValid || !m4.errors.some(e => e.includes('Invalid email format in people[0]'))) throw new Error('Schema Test 4 Failed: Invalid nested email allowed');
+
+    // 5. Ambiguous local phone without region in people[] is not upgraded to verified E.164
+    const m5 = validateCandidateFactSet({
+      person: { name: 'Test' },
+      people: [{ name: 'Friend', phone: '9876543210' }]
+    }, { userRegion: null });
+    if (!m5.isValid || m5.sanitized.people[0].phone_normalized.e164 !== null) throw new Error('Schema Test 5 Failed: Ambiguous local phone was upgraded to E.164');
+
+    // 6. Invalid dates do not become today's date
+    const m6 = validateCandidateFactSet({
+      person: { name: 'Test' },
+      interaction: { type: 'Meeting', details: 'Chat', date: 'someday next week' }
+    });
+    if (!m6.isValid || m6.sanitized.interaction.date !== null) throw new Error('Schema Test 6 Failed: Invalid date was converted to today!');
+    if (!m6.sanitized.interaction.raw_date_expression.includes('someday next week')) throw new Error('Schema Test 6 Failed: Raw date expression not preserved');
+
+    // 7. Wrong object/array types rejected
+    const m7a = validateCandidateFactSet('not-an-object');
+    const m7b = validateCandidateFactSet({ person: 'not-an-object' });
+    if (m7a.isValid || m7b.isValid) throw new Error('Schema Test 7 Failed: Non-object types accepted');
+
+    // 8. Unknown fields policy: dropped/stripped from sanitized output
+    const m8 = validateCandidateFactSet({
+      person: { name: 'Valid Person', hacker_extra_data: 'payload' },
+      unallowed_top_level_prop: 'injected'
+    });
+    if (!m8.isValid || m8.sanitized.unallowed_top_level_prop !== undefined) throw new Error('Schema Test 8 Failed: Unknown field was not stripped');
+
+    // 9. Provider attempts to inject commit/review/sql state rejected
+    const m9 = validateCandidateFactSet({
+      person: { name: 'Test' },
       commit_state: 'COMMITTED',
-      role: 'admin'
-    };
-
-    const valRes = validateCandidateFactSet(maliciousAIResult);
-    if (valRes.isValid) throw new Error('Security Violation: AI Output validation allowed injected owner_user_id/role!');
-    if (!valRes.errors.some(e => e.includes('owner_user_id'))) {
-      throw new Error('AI Validation did not report forbidden owner_user_id injection!');
-    }
-    console.log('   ✅ CandidateFactSet schema validator blocked unauthorized owner_user_id and role injection attempts.');
-
-    // ---------------------------------------------------------------
-    // TEST 17: Temporal Reconciliation & History Preservation (Cases 1-5)
-    // ---------------------------------------------------------------
-    console.log('1️⃣7️⃣ Testing Temporal Reconciliation & History Preservation (Cases 1, 2, 3, 4, 5)...');
-    
-    // Case 1: "John left IBM and joined Amazon"
-    const case1Temp = analyzeTemporalTransitions("John left IBM and joined Amazon.", { name: "John" });
-    if (case1Temp.historyTransitions.length !== 2 || !case1Temp.historyTransitions.some(h => h.value_payload.company_name === 'IBM' && !h.is_current)) {
-      throw new Error('Temporal Case 1 Failed: IBM was not categorized as historical!');
+      sql: 'DROP TABLE users'
+    });
+    if (m9.isValid || !m9.errors.some(e => e.includes('commit_state')) || !m9.errors.some(e => e.includes('sql'))) {
+      throw new Error('Schema Test 9 Failed: SQL/Commit state injection allowed');
     }
 
-    // Case 3: "He used to work at L'Oreal"
-    const case3Temp = analyzeTemporalTransitions("He used to work at L'Oreal.", { name: "John", organization: "L'Oreal" });
-    if (!case3Temp.historyTransitions.some(h => h.value_payload.company_name === "L'Oreal" && !h.is_current)) {
-      throw new Error('Temporal Case 3 Failed: L\'Oreal was not categorized as historical!');
+    // 10. Normalization warnings and schema_version: "0.2.0" present in validated output
+    const m10 = validateCandidateFactSet({
+      person: { name: 'Test' },
+      interaction: { type: 'Lunch', details: 'Lunch meeting' }
+    });
+    if (!m10.isValid || m10.sanitized.schema_version !== '0.2.0' || !m10.normalization_issues.some(w => w.includes('Lunch'))) {
+      throw new Error('Schema Test 10 Failed: Schema version or normalization issue missing');
     }
-
-    // Case 4: "He may be joining Amazon next month" -> Future/Uncertain Fact
-    const case4Temp = analyzeTemporalTransitions("He may be joining Amazon next month.", { name: "John" });
-    if (!case4Temp.historyTransitions.some(h => h.confidence_status === 'FUTURE' && !h.is_current)) {
-      throw new Error('Temporal Case 4 Failed: Future transition to Amazon was not categorized as FUTURE!');
-    }
-    console.log('   ✅ Temporal Reconciliation successfully processed historical transitions, former companies, and future facts.');
+    console.log('   ✅ All 10 mandatory AI schema validation and malformed-provider tests passed.');
 
     // ---------------------------------------------------------------
-    // TEST 18: Paraphrased Ask Dossier Generalization
+    // TEST 17: Standalone Temporal Reconciliation Evaluation Suite
     // ---------------------------------------------------------------
-    console.log('1️⃣8️⃣ Testing Paraphrased Ask Dossier Query Interpretation...');
-    const qPara = await request(server, 'POST', '/api/v1/ask-dossier', headersA, { query: "Give me David's mobile number." });
-    if (qPara.statusCode !== 200 || !qPara.body.answer.includes('9876543210')) {
-      throw new Error(`Paraphrased Ask Query Failed: Expected 9876543210, got ${JSON.stringify(qPara.body)}`);
+    console.log('1️⃣7️⃣ Running Standalone Temporal Reconciliation Evaluation Suite...');
+    const tempReport = await runTemporalEvaluation();
+    if (tempReport.pass_rate_percent < 100.0) {
+      throw new Error(`Temporal Evaluation did not achieve 100% pass rate! Achieved: ${tempReport.pass_rate_percent}%`);
     }
-
-    const qQuote = await request(server, 'POST', '/api/v1/ask-dossier', headersA, { query: "Who was supposed to send me a quote?" });
-    if (qQuote.statusCode !== 200 || !qQuote.body.answer.includes('Rahul')) {
-      throw new Error(`Quote Paraphrase Ask Query Failed: Expected Rahul, got ${JSON.stringify(qQuote.body)}`);
-    }
-    console.log('   ✅ Ask Dossier successfully generalized queries beyond literal phrases.');
+    console.log('   ✅ Standalone Temporal Reconciliation Evaluation Suite achieved 100.00% pass rate across all 10 fixtures.');
 
     // ---------------------------------------------------------------
-    // TEST 19: Execute 52-Case DRIE Corpus Evaluation
+    // TEST 18: Database Migration Smoke Test (001 -> 002 -> 003 -> 004)
     // ---------------------------------------------------------------
-    console.log('1️⃣9️⃣ Running 52-Case DRIE Evaluation Corpus Suite...');
+    console.log('1️⃣8️⃣ Running Database Migration Smoke Test (001 -> 002 -> 003 -> 004)...');
+    const migOk = await verifyMigrations();
+    if (!migOk) {
+      throw new Error('Database Migration Smoke Test failed!');
+    }
+    console.log('   ✅ Database schema integrity and migration sequence verified successfully.');
+
+    // ---------------------------------------------------------------
+    // TEST 19: Execute 78-Case DRIE Corpus Evaluation
+    // ---------------------------------------------------------------
+    console.log('1️⃣9️⃣ Running Expanded DRIE Evaluation Corpus Suite (78 Test Cases)...');
     const drieReport = await runDrieEvaluation();
     if (drieReport.pass_rate_percent < 100.0) {
       throw new Error(`DRIE Evaluation did not achieve 100% pass rate! Achieved: ${drieReport.pass_rate_percent}%`);
     }
-    console.log('   ✅ DRIE Evaluation Corpus achieved 100.00% pass rate across all 52 test cases.');
+    console.log('   ✅ DRIE Evaluation Corpus achieved 100.00% pass rate across all 78 test cases.');
 
-    console.log('\n🎉 ALL SPRINT 1 & SPRINT 2 TESTS AND DRIE CORPUS PASSED SUCCESSFULLY (100% PASS)! 🎉\n');
+    // ---------------------------------------------------------------
+    // TEST 20: Tell Dossier v0.3 End-to-End Evaluation (25 Fixtures)
+    // ---------------------------------------------------------------
+    console.log('2️⃣0️⃣ Running Tell Dossier v0.3 End-to-End Evaluation Suite (25 Fixtures)...');
+    const tellReport = await runTellEvaluation();
+    if (tellReport.pass_rate_percent < 100.0) {
+      throw new Error(`Tell Evaluation did not achieve 100% pass rate! Achieved: ${tellReport.pass_rate_percent}%`);
+    }
+    console.log('   ✅ Tell Dossier v0.3 Evaluation Suite achieved 100.00% pass rate across all 25 fixtures.');
+
+    // ---------------------------------------------------------------
+    // TEST 21: Ask Dossier v0.2 Generalization Evaluation (11 Scenarios)
+    // ---------------------------------------------------------------
+    console.log('2️⃣1️⃣ Running Ask Dossier v0.2 Generalization Suite (11 Scenarios)...');
+    const askReport = await runAskEvaluation();
+    if (askReport.pass_rate_percent < 100.0) {
+      throw new Error(`Ask Evaluation did not achieve 100% pass rate! Achieved: ${askReport.pass_rate_percent}%`);
+    }
+    console.log('   ✅ Ask Dossier v0.2 Generalization Suite achieved 100.00% pass rate across all 11 scenarios.');
+
+    // ---------------------------------------------------------------
+    // TEST 22: Security Regression & Commit Hardening Suite (17 Tests)
+    // ---------------------------------------------------------------
+    console.log('2️⃣2️⃣ Running Security Regression & Commit Hardening Suite (17 Tests)...');
+    const secReport = await runSecurityRegressionTests();
+    if (secReport.summary.pass_rate_percent < 100.0) {
+      throw new Error(`Security Regression Suite did not achieve 100% pass rate! Achieved: ${secReport.summary.pass_rate_percent}%`);
+    }
+    console.log('   ✅ Security Regression Suite achieved 100.00% pass rate across all 17 security tests.');
+
+    // ---------------------------------------------------------------
+    // TEST 23: Performance Guardrails & 5,000-Contact Benchmark
+    // ---------------------------------------------------------------
+    console.log('2️⃣3️⃣ Running Performance Guardrails & 5,000-Contact Benchmark...');
+    const perfReport = await runPerformanceBenchmark();
+    if (!perfReport || !perfReport.scenarios || perfReport.scenarios.length === 0) {
+      throw new Error('Performance Benchmark failed to execute!');
+    }
+    console.log('   ✅ Performance Guardrails Benchmark completed with empirical 5,000-contact measurements.');
+
+    // ---------------------------------------------------------------
+    // TEST 24: Sprint 3A Six Mandatory Investor Demo Scenarios Suite
+    // ---------------------------------------------------------------
+    console.log('\n2️⃣4️⃣ Running Sprint 3A Six Mandatory Investor Demo Scenarios Suite...');
+    await runDemoScenarios();
+    console.log('   ✅ Sprint 3A Six Mandatory Investor Demo Scenarios Suite passed with 100% pass rate.');
+
+    console.log('\n🎉 ALL 24 TEST STAGES, SPRINT 3A SCENARIOS, SECURITY SUITES, EVALUATIONS, AND BENCHMARKS PASSED SUCCESSFULLY (100% PASS)! 🎉\n');
     process.exit(0);
   } finally {
     server.close();

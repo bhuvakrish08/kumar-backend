@@ -428,6 +428,95 @@ async function migrate() {
     console.error('Error executing Migration 003:', e.message);
   }
 
+  // 13. Execute Migration 004: Harden History, Provenance, and User Phone Region
+  try {
+    console.log('Executing Migration 004...');
+
+    // 13.1 Add phone_region to users table if not exists
+    const [userRegionCol] = await pool.query("SHOW COLUMNS FROM users LIKE 'phone_region'");
+    if (userRegionCol.length === 0) {
+      await pool.query("ALTER TABLE users ADD COLUMN phone_region varchar(2) DEFAULT NULL COMMENT 'ISO 3166-1 alpha-2 country code' AFTER email");
+      console.log('Added users.phone_region column.');
+    } else {
+      console.log('users.phone_region already exists.');
+    }
+
+    // 13.2 Add candidate_fact_id to contact_history if not exists
+    const [histCandCol] = await pool.query("SHOW COLUMNS FROM contact_history LIKE 'candidate_fact_id'");
+    if (histCandCol.length === 0) {
+      await pool.query("ALTER TABLE contact_history ADD COLUMN candidate_fact_id bigint(20) UNSIGNED DEFAULT NULL AFTER source_input_event_id");
+      try {
+        await pool.query("ALTER TABLE contact_history ADD CONSTRAINT fk_history_candidate FOREIGN KEY (candidate_fact_id) REFERENCES candidate_facts (id) ON DELETE SET NULL");
+      } catch (fkErr) {
+        console.log('Note on fk_history_candidate:', fkErr.message);
+      }
+      console.log('Added contact_history.candidate_fact_id column.');
+    } else {
+      console.log('contact_history.candidate_fact_id already exists.');
+    }
+
+    // 13.3 Add temporal_precision and raw_time_expression to contact_history if not exists
+    const [histPrecCol] = await pool.query("SHOW COLUMNS FROM contact_history LIKE 'temporal_precision'");
+    if (histPrecCol.length === 0) {
+      await pool.query("ALTER TABLE contact_history ADD COLUMN temporal_precision varchar(50) NOT NULL DEFAULT 'unknown' COMMENT 'exact, day, month, year, relative, unknown' AFTER confidence_status");
+      console.log('Added contact_history.temporal_precision column.');
+    } else {
+      console.log('contact_history.temporal_precision already exists.');
+    }
+
+    const [histRawTimeCol] = await pool.query("SHOW COLUMNS FROM contact_history LIKE 'raw_time_expression'");
+    if (histRawTimeCol.length === 0) {
+      await pool.query("ALTER TABLE contact_history ADD COLUMN raw_time_expression varchar(255) DEFAULT NULL AFTER temporal_precision");
+      console.log('Added contact_history.raw_time_expression column.');
+    } else {
+      console.log('contact_history.raw_time_expression already exists.');
+    }
+
+    // 13.4 Add composite indexes if not exist
+    const [histIndexes] = await pool.query("SHOW INDEX FROM contact_history WHERE Key_name = 'idx_history_owner_contact_type_current'");
+    if (histIndexes.length === 0) {
+      await pool.query("ALTER TABLE contact_history ADD KEY idx_history_owner_contact_type_current (owner_user_id, contact_id, fact_type, is_current)");
+      console.log('Added index idx_history_owner_contact_type_current on contact_history.');
+    } else {
+      console.log('Index idx_history_owner_contact_type_current already exists.');
+    }
+
+    const [provIndexes] = await pool.query("SHOW INDEX FROM fact_provenance WHERE Key_name = 'idx_provenance_owner_target'");
+    if (provIndexes.length === 0) {
+      await pool.query("ALTER TABLE fact_provenance ADD KEY idx_provenance_owner_target (owner_user_id, target_type, target_id)");
+      console.log('Added index idx_provenance_owner_target on fact_provenance.');
+    } else {
+      console.log('Index idx_provenance_owner_target already exists.');
+    }
+
+    // 13.5 Backfill legacy unparsed target_reference in fact_provenance
+    const [unparsedProv] = await pool.query(
+      "SELECT id, target_reference FROM fact_provenance WHERE (target_type IS NULL OR target_id IS NULL) AND target_reference IS NOT NULL"
+    );
+    for (const p of unparsedProv) {
+      if (typeof p.target_reference === 'string' && p.target_reference.includes(':')) {
+        const parts = p.target_reference.split(':');
+        const type = parts[0] === 'contacts' ? 'contact' : parts[0] === 'interactions' ? 'interaction' : parts[0];
+        const idNum = parseInt(parts[1], 10);
+        if (type && !isNaN(idNum)) {
+          await pool.query("UPDATE fact_provenance SET target_type = ?, target_id = ? WHERE id = ?", [type, idNum, p.id]);
+        }
+      }
+    }
+    // 14. Migration 005: Add polished_content to input_events if not exists
+    console.log('Checking Migration 005 (Polished Natural-Language Memory Capture)...');
+    const [polCols] = await pool.query("SHOW COLUMNS FROM input_events LIKE 'polished_content'");
+    if (polCols.length === 0) {
+      await pool.query("ALTER TABLE input_events ADD COLUMN polished_content TEXT DEFAULT NULL AFTER raw_content");
+      console.log('Added input_events.polished_content column.');
+    } else {
+      console.log('input_events.polished_content already exists.');
+    }
+
+  } catch (e) {
+    console.error('Error executing Migration 004/005:', e.message);
+  }
+
   console.log('Migration finished successfully!');
   process.exit(0);
 }

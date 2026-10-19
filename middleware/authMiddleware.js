@@ -29,15 +29,18 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Unauthorized: Invalid session token' });
     }
 
-    // Verify user exists in database to prevent FK failures on deleted/invalid users
+    // Verify user exists in database and fetch phone_region
     const pool = getPool();
-    const [userRows] = await pool.query('SELECT id FROM users WHERE id = ? LIMIT 1', [decoded.id]);
+    const [userRows] = await pool.query('SELECT id, phone_region FROM users WHERE id = ? LIMIT 1', [decoded.id]);
     if (!userRows || userRows.length === 0) {
       res.clearCookie(COOKIE_NAME);
       return res.status(401).json({ error: 'Unauthorized: Session user no longer exists. Please log in again.' });
     }
 
-    req.user = decoded;
+    req.user = {
+      ...decoded,
+      phone_region: userRows[0].phone_region || decoded.phone_region || null
+    };
     next();
   } catch (err) {
     if (err.message && err.message.includes('SESSION_SECRET environment variable is missing')) {

@@ -25,8 +25,15 @@ const askDossierRoutes = require('./routes/askDossierRoutes');
 
 const { getUploadDir } = require('./lib/uploadConfig');
 
+const { correlationMiddleware } = require('./middleware/correlationMiddleware');
+const { getPool } = require('./db');
+const { isKeyConfigured } = require('./lib/geminiAdapter');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Correlation ID & telemetry middleware
+app.use(correlationMiddleware);
 
 // Serve uploaded static files from persistent upload directory (/uploads)
 app.use('/uploads', express.static(getUploadDir()));
@@ -51,7 +58,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'X-Requested-With', 'X-Correlation-Id', 'x-correlation-id']
 }));
 
 // Body & Cookie Parsers
@@ -59,18 +66,37 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Uptime & Health Check Endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
+// Uptime & Health Check Endpoint (Application & Database Readiness)
+const healthHandler = async (req, res) => {
+  let dbConnected = false;
+  try {
+    const pool = getPool();
+    await pool.query('SELECT 1');
+    dbConnected = true;
+  } catch (e) {
+    dbConnected = false;
+  }
+
+  const provider = process.env.AI_PROVIDER || 'gemini';
+  const aiReady = isKeyConfigured(process.env.GEMINI_API_KEY);
+
+  res.status(dbConnected ? 200 : 503).json({
+    status: dbConnected ? 'ok' : 'degraded',
     service: 'Dossier API',
     version: '1.0.0',
+    database: dbConnected ? 'connected' : 'disconnected',
+    ai_provider: provider,
+    ai_mode: aiReady ? 'live_provider' : 'deterministic_fallback',
     uptime: process.uptime(),
     timestamp: new Date().toISOString()
   });
-});
+};
+
+app.get('/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // Versioned API Routes (/api/v1/...)
+const demoRoutes = require('./routes/demoRoutes');
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/contacts', contactRoutes);
 app.use('/api/v1/sources', sourceRoutes);
@@ -80,6 +106,7 @@ app.use('/api/v1/upload', uploadRoutes);
 app.use('/api/v1/tell-dossier', tellDossierRoutes);
 app.use('/api/v1/commitments', commitmentRoutes);
 app.use('/api/v1/ask-dossier', askDossierRoutes);
+app.use('/api/v1/demo', demoRoutes);
 
 // Root Fallback Route
 app.get('/', (req, res) => {

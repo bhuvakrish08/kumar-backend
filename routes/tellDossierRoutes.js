@@ -13,13 +13,34 @@ const { buildNarrative } = require('../lib/narrative');
  * Step 1 of Tell Dossier: Parse messy text, run strict AI validation, identity resolution v0.2, and temporal analysis.
  */
 router.post('/analyze', requireAuth, async (req, res) => {
+  const isStream = req.body?.stream === true || (req.headers['accept'] && req.headers['accept'].includes('text/event-stream'));
+
+  if (isStream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  }
+
+  const sendProgress = (stage, percent, message, data = null) => {
+    if (isStream) {
+      res.write(`data: ${JSON.stringify({ stage, percent, message, data })}\n\n`);
+    }
+  };
+
   try {
     const userId = req.user.id;
     const { raw_content, event_time_hint } = req.body;
 
     if (!raw_content || typeof raw_content !== 'string' || raw_content.trim() === '') {
+      if (isStream) {
+        sendProgress('ERROR', 0, 'raw_content is required');
+        return res.end();
+      }
       return res.status(400).json({ error: 'raw_content is required' });
     }
+
+    sendProgress('INITIALIZING', 12, 'Input captured & analysis initialized');
 
     const pool = getPool();
 
@@ -31,10 +52,20 @@ router.post('/analyze', requireAuth, async (req, res) => {
     );
     const inputEventId = eventRes.insertId;
 
+    sendProgress('AI_EXTRACTING', 28, 'Polishing memory & analyzing facts...');
+
     // 2. Extract & Validate Candidate Facts (via AI Adapter & Strict CandidateFactSet Schema Validator)
-    const extraction = await extractCandidateFactsWithAdapter(raw_content, { userId });
+    const extraction = await extractCandidateFactsWithAdapter(raw_content, {
+      userId,
+      correlationId: req.correlationId,
+      userRegion: req.user ? req.user.phone_region : null,
+      onProgress: (p, msg) => sendProgress('AI_EXTRACTING', p, msg)
+    });
+
+    sendProgress('SCHEMA_VALIDATED', 64, 'Candidate facts extracted & schema validated');
 
     // 3. Fetch User's existing contacts for identity resolution
+    sendProgress('FETCHING_CONTACTS', 72, 'Scanning existing contacts...');
     const [existingContacts] = await pool.query(
       `SELECT id, first_name, middle_name, last_name, nickname, company_name, job_title, primary_email, primary_phone, mobile_phone, introduced_by_name, how_we_met_notes
        FROM contacts WHERE owner_user_id = ?`,
@@ -42,14 +73,17 @@ router.post('/analyze', requireAuth, async (req, res) => {
     );
 
     // 4. Analyze Temporal Transitions (e.g. "John left IBM and joined Amazon")
+    sendProgress('TEMPORAL_ANALYSIS', 80, 'Analyzing temporal career transitions...');
     const temporalAnalysis = analyzeTemporalTransitions(raw_content, extraction.person, null);
 
     // 5. Run Identity Resolution Engine v0.2
+    sendProgress('IDENTITY_RESOLUTION', 88, 'Resolving identity & duplicate check...');
     const identityRes = resolveIdentity(extraction.person, existingContacts, {
       isTemporalEmployerChange: temporalAnalysis.isTemporalEmployerChange
     });
 
     // 6. Store Candidate Facts in DB
+    sendProgress('STORING_FACTS', 95, 'Storing candidate facts & preparing review...');
     const confidenceScore = identityRes.decision === 'MATCH' ? 0.95 : identityRes.decision === 'PROBABLE_MATCH' ? 0.75 : 0.50;
     const conflictState = identityRes.decision === 'CONFLICT' ? 'CONFLICT' : identityRes.decision === 'AMBIGUOUS' ? 'AMBIGUOUS' : 'NONE';
 
@@ -60,10 +94,10 @@ router.post('/analyze', requireAuth, async (req, res) => {
     );
     const candidateFactId = factRes.insertId;
 
-    // Update Input Event processing status
+    // Update Input Event processing status and polished_content
     await pool.query(
-      `UPDATE input_events SET processing_status = 'ANALYZED' WHERE id = ? AND owner_user_id = ?`,
-      [inputEventId, userId]
+      `UPDATE input_events SET processing_status = 'ANALYZED', polished_content = ? WHERE id = ? AND owner_user_id = ?`,
+      [extraction.polishedMemory || null, inputEventId, userId]
     );
 
     // 7. Build structured review items
@@ -113,24 +147,43 @@ router.post('/analyze', requireAuth, async (req, res) => {
       temporal_transitions: temporalAnalysis.historyTransitions
     };
 
-    return res.json({
+    const finalResult = {
       input_event_id: inputEventId,
       candidate_fact_id: candidateFactId,
       raw_content: raw_content,
+      polished_memory: extraction.polishedMemory || null,
       extraction,
       identity_resolution: {
         decision: identityRes.decision,
         matched_contact: matchedContact,
-        candidate_contacts: identityRes.candidateContacts,
+        candidate_contacts: (identityRes.candidateContacts || []).map(c => ({
+          ...c,
+          id: c.id || c.contactId,
+          contactId: c.contactId || c.id,
+          first_name: c.first_name || (c.contactName ? c.contactName.split(' ')[0] : ''),
+          last_name: c.last_name || (c.contactName ? c.contactName.split(' ').slice(1).join(' ') : ''),
+          company_name: c.company_name || c.company || ''
+        })),
         evidence: identityRes.evidence,
         model_version: identityRes.model_version
       },
       temporal_analysis: temporalAnalysis,
       review_items: reviewItems
-    });
+    };
+
+    if (isStream) {
+      sendProgress('COMPLETE', 100, 'Ready!', finalResult);
+      return res.end();
+    }
+
+    return res.json(finalResult);
 
   } catch (err) {
     console.error('Error analyzing Tell Dossier input:', err);
+    if (isStream) {
+      sendProgress('ERROR', 0, err.message || 'Failed to analyze Dossier input');
+      return res.end();
+    }
     return res.status(500).json({ error: 'Failed to analyze Dossier input' });
   }
 });
@@ -139,18 +192,128 @@ router.post('/analyze', requireAuth, async (req, res) => {
  * POST /api/v1/tell-dossier/commit
  * Step 2 of Tell Dossier: Save user-accepted candidate facts to authoritative DB with provenance and temporal history.
  */
+// Strict schema validation for accepted_items to reject arbitrary injected fields
+const ALLOWED_TOP_LEVEL_KEYS = new Set([
+  'contact_info',
+  'organization',
+  'how_we_met',
+  'interaction',
+  'notes',
+  'sources',
+  'commitments',
+  'temporal_transitions'
+]);
+
+const ALLOWED_CONTACT_KEYS = new Set(['name', 'phone', 'email', 'title']);
+const ALLOWED_ORG_KEYS = new Set(['company_name', 'job_title']);
+const ALLOWED_HOW_WE_MET_KEYS = new Set(['met_date', 'met_context', 'introduced_by_name', 'how_we_met_notes']);
+const ALLOWED_INTERACTION_KEYS = new Set(['type', 'details', 'date']);
+const ALLOWED_COMMITMENT_KEYS = new Set(['id', 'type', 'title', 'details', 'due_time', 'status']);
+const ALLOWED_TRANSITION_KEYS = new Set([
+  'fact_type', 'current_value', 'proposed_value', 'value_payload',
+  'effective_time', 'observation_time', 'temporal_precision', 'raw_time_expression',
+  'status', 'approved', 'is_current', 'confidence_status', 'valid_from', 'valid_to', 'candidate_fact_id'
+]);
+
+function validateAcceptedItems(acceptedItems) {
+  if (!acceptedItems || typeof acceptedItems !== 'object') {
+    return { valid: true };
+  }
+  for (const key of Object.keys(acceptedItems)) {
+    if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) {
+      return { valid: false, error: `Forbidden or injected field in accepted_items: ${key}` };
+    }
+  }
+
+  if (acceptedItems.contact_info && typeof acceptedItems.contact_info === 'object') {
+    for (const key of Object.keys(acceptedItems.contact_info)) {
+      if (!ALLOWED_CONTACT_KEYS.has(key)) {
+        return { valid: false, error: `Forbidden field in contact_info: ${key}` };
+      }
+    }
+  }
+
+  if (acceptedItems.organization && typeof acceptedItems.organization === 'object') {
+    for (const key of Object.keys(acceptedItems.organization)) {
+      if (!ALLOWED_ORG_KEYS.has(key)) {
+        return { valid: false, error: `Forbidden field in organization: ${key}` };
+      }
+    }
+  }
+
+  if (acceptedItems.how_we_met && typeof acceptedItems.how_we_met === 'object') {
+    for (const key of Object.keys(acceptedItems.how_we_met)) {
+      if (!ALLOWED_HOW_WE_MET_KEYS.has(key)) {
+        return { valid: false, error: `Forbidden field in how_we_met: ${key}` };
+      }
+    }
+  }
+
+  if (acceptedItems.interaction && typeof acceptedItems.interaction === 'object') {
+    for (const key of Object.keys(acceptedItems.interaction)) {
+      if (!ALLOWED_INTERACTION_KEYS.has(key)) {
+        return { valid: false, error: `Forbidden field in interaction: ${key}` };
+      }
+    }
+  }
+
+  if (acceptedItems.commitments) {
+    if (!Array.isArray(acceptedItems.commitments)) {
+      return { valid: false, error: 'commitments must be an array' };
+    }
+    for (const com of acceptedItems.commitments) {
+      if (typeof com !== 'object' || com === null) {
+        return { valid: false, error: 'Invalid commitment entry' };
+      }
+      for (const k of Object.keys(com)) {
+        if (!ALLOWED_COMMITMENT_KEYS.has(k)) {
+          return { valid: false, error: `Forbidden field in commitment: ${k}` };
+        }
+      }
+    }
+  }
+
+  if (acceptedItems.temporal_transitions) {
+    if (!Array.isArray(acceptedItems.temporal_transitions)) {
+      return { valid: false, error: 'temporal_transitions must be an array' };
+    }
+    for (const tr of acceptedItems.temporal_transitions) {
+      if (typeof tr !== 'object' || tr === null) {
+        return { valid: false, error: 'Invalid temporal transition entry' };
+      }
+      for (const k of Object.keys(tr)) {
+        if (!ALLOWED_TRANSITION_KEYS.has(k)) {
+          return { valid: false, error: `Forbidden field in temporal_transition: ${k}` };
+        }
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * POST /api/v1/tell-dossier/commit
+ * Step 2 of Tell Dossier: Save user-accepted candidate facts to authoritative DB with provenance and temporal history.
+ * Hardened with:
+ * - Server-side identity conflict verification (browser spoofing blocked)
+ * - Strict candidate_fact_id / input_event_id / owner_user_id validation
+ * - Injected field rejection in accepted_items
+ * - Target contact ownership verification (IDOR blocked)
+ * - Single atomic MySQL transaction with complete rollback on error
+ */
 router.post('/commit', requireAuth, async (req, res) => {
   const connection = await getPool().getConnection();
   try {
     const userId = req.user.id;
-    const { input_event_id, candidate_fact_id, target_person_option, target_contact_id, accepted_items, identity_decision } = req.body;
+    const { input_event_id, candidate_fact_id, identity_decision, target_person_option, target_contact_id, accepted_items, polished_memory } = req.body;
 
     if (!input_event_id) {
       connection.release();
       return res.status(400).json({ error: 'input_event_id is required' });
     }
 
-    // Security Check: Verify Input Event belongs to this user
+    // 1. Security Check: Verify Input Event belongs to authenticated user
     const [eventRows] = await connection.query(
       `SELECT * FROM input_events WHERE id = ? AND owner_user_id = ?`,
       [input_event_id, userId]
@@ -158,19 +321,93 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     if (eventRows.length === 0) {
       connection.release();
-      return res.status(404).json({ error: 'Input event not found' });
+      return res.status(404).json({ error: 'Input event not found or unauthorized' });
     }
-
     const inputEvent = eventRows[0];
 
-    // Enforce Guardrail: AMBIGUOUS or CONFLICT identity decision requires explicit resolution from user
-    if ((identity_decision === 'AMBIGUOUS' || identity_decision === 'CONFLICT') && !target_person_option) {
+    // Idempotency: Protect against duplicate button clicks / repeat submissions
+    if (inputEvent.processing_status === 'COMMITTED') {
+      const [existingProv] = await connection.query(
+        'SELECT target_id FROM fact_provenance WHERE input_event_id = ? AND target_type = "contact" AND owner_user_id = ? LIMIT 1',
+        [input_event_id, userId]
+      );
       connection.release();
-      return res.status(400).json({
-        error: 'Ambiguous or conflicting identity requires explicit user selection of existing contact or New Person'
+      const existingContactId = existingProv.length > 0 ? existingProv[0].target_id : (target_contact_id || null);
+      return res.json({
+        success: true,
+        is_idempotent: true,
+        message: 'Input event has already been safely committed',
+        contact_id: existingContactId
       });
     }
 
+    // 2. Validate accepted_items against strict allowed schema
+    const validationRes = validateAcceptedItems(accepted_items);
+    if (!validationRes.valid) {
+      connection.release();
+      return res.status(400).json({ error: validationRes.error });
+    }
+
+    // 3. Security Check: Verify Candidate Fact belongs to this input event and user
+    let candidateFact = null;
+    if (candidate_fact_id) {
+      const [candRows] = await connection.query(
+        `SELECT * FROM candidate_facts WHERE id = ? AND input_event_id = ? AND owner_user_id = ?`,
+        [candidate_fact_id, input_event_id, userId]
+      );
+      if (candRows.length === 0) {
+        connection.release();
+        return res.status(403).json({ error: 'Candidate fact does not match input event or belongs to another user' });
+      }
+      candidateFact = candRows[0];
+    } else {
+      const [candRows] = await connection.query(
+        `SELECT * FROM candidate_facts WHERE input_event_id = ? AND owner_user_id = ? ORDER BY id DESC LIMIT 1`,
+        [input_event_id, userId]
+      );
+      if (candRows.length > 0) {
+        candidateFact = candRows[0];
+      }
+    }
+
+    // 4. Server-Side Identity Conflict Enforcement:
+    // Browser cannot spoof CONFLICT / AMBIGUOUS to MATCH. Server checks candidateFact.conflict_state directly from DB.
+    const trustedConflictState = candidateFact ? candidateFact.conflict_state : 'NONE';
+    const effectiveDecision = identity_decision || trustedConflictState;
+    if (trustedConflictState === 'AMBIGUOUS' || trustedConflictState === 'CONFLICT' || effectiveDecision === 'AMBIGUOUS' || effectiveDecision === 'CONFLICT') {
+      const hasValidResolution =
+        (target_person_option === 'new' || target_person_option === 'new_person') ||
+        (target_person_option === 'existing' && Boolean(target_contact_id));
+
+      if (!hasValidResolution) {
+        connection.release();
+        return res.status(400).json({
+          error: 'Ambiguous or conflicting identity requires explicit user selection of an authorized existing contact or New Person'
+        });
+      }
+    }
+
+    // 5. Target Contact Ownership Verification (IDOR Protection)
+    let existingContactObj = null;
+    if (target_person_option === 'existing') {
+      if (!target_contact_id) {
+        connection.release();
+        return res.status(400).json({ error: 'target_contact_id is required when target_person_option is existing' });
+      }
+
+      const [contactRows] = await connection.query(
+        `SELECT * FROM contacts WHERE id = ? AND owner_user_id = ?`,
+        [target_contact_id, userId]
+      );
+
+      if (contactRows.length === 0) {
+        connection.release();
+        return res.status(403).json({ error: 'Target contact not found or unauthorized' });
+      }
+      existingContactObj = contactRows[0];
+    }
+
+    // Start single atomic transaction
     await connection.beginTransaction();
 
     let finalContactId = null;
@@ -184,14 +421,22 @@ router.post('/commit', requireAuth, async (req, res) => {
     };
 
     // Parse person name into first, middle, last
-    const nameStr = getVal(accepted_items?.contact_info?.name) || 'Unknown';
-    const nameParts = nameStr.split(/\s+/);
-    let firstName = nameParts[0] || 'Unknown';
-    let lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
-    let middleName = '';
-    if (nameParts.length > 2) {
-      middleName = nameParts.slice(1, -1).join(' ');
-      lastName = nameParts[nameParts.length - 1];
+    const nameStr = getVal(accepted_items?.contact_info?.name) || null;
+    let firstName = null;
+    let middleName = null;
+    let lastName = null;
+
+    if (nameStr) {
+      const nameParts = nameStr.split(/\s+/);
+      firstName = nameParts[0] || null;
+      lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : null;
+      if (nameParts.length > 2) {
+        middleName = nameParts.slice(1, -1).join(' ');
+        lastName = nameParts[nameParts.length - 1];
+      }
+    } else if (target_person_option !== 'existing') {
+      firstName = 'Unknown';
+      lastName = '';
     }
 
     const phone = getVal(accepted_items?.contact_info?.phone);
@@ -202,25 +447,13 @@ router.post('/commit', requireAuth, async (req, res) => {
     const metContext = getVal(accepted_items?.how_we_met?.met_context);
     const introducer = getVal(accepted_items?.how_we_met?.introduced_by_name);
     const howWeMetNotes = getVal(accepted_items?.how_we_met?.how_we_met_notes);
-    const personalNotes = getVal(accepted_items?.notes) || inputEvent.raw_content;
+    const resolvedMemory = (typeof polished_memory === 'string' && polished_memory.trim())
+      ? polished_memory.trim()
+      : (inputEvent.polished_content || inputEvent.raw_content);
+    const personalNotes = getVal(accepted_items?.notes) || resolvedMemory;
 
-    let existingContactObj = null;
-
-    if (target_person_option === 'existing' && target_contact_id) {
-      // Security Check: Verify target contact belongs to user
-      const [contactRows] = await connection.query(
-        `SELECT * FROM contacts WHERE id = ? AND owner_user_id = ?`,
-        [target_contact_id, userId]
-      );
-
-      if (contactRows.length === 0) {
-        await connection.rollback();
-        connection.release();
-        return res.status(404).json({ error: 'Target contact not found or unauthorized' });
-      }
-
-      finalContactId = target_contact_id;
-      existingContactObj = contactRows[0];
+    if (target_person_option === 'existing' && existingContactObj) {
+      finalContactId = existingContactObj.id;
 
       // Update contact fields if provided
       await connection.query(
@@ -243,7 +476,6 @@ router.post('/commit', requireAuth, async (req, res) => {
           personalNotes, personalNotes, finalContactId, userId
         ]
       );
-
     } else {
       // Create NEW person contact
       const [cRes] = await connection.query(
@@ -254,12 +486,14 @@ router.post('/commit', requireAuth, async (req, res) => {
       finalContactId = cRes.insertId;
     }
 
+    const candFactId = candidateFact ? candidateFact.id : (candidate_fact_id || null);
+
     // Temporal Reconciliation: Save temporal history transitions
     const temporalAnalysis = analyzeTemporalTransitions(inputEvent.raw_content, { name: nameStr, phone, email, organization: company }, existingContactObj);
     if (accepted_items?.temporal_transitions && Array.isArray(accepted_items.temporal_transitions)) {
-      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, accepted_items.temporal_transitions);
+      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, accepted_items.temporal_transitions, candFactId);
     } else if (temporalAnalysis.historyTransitions.length > 0) {
-      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, temporalAnalysis.historyTransitions);
+      await saveContactHistoryTransitions(connection, userId, finalContactId, input_event_id, temporalAnalysis.historyTransitions, candFactId);
     }
 
     // Save Sources
@@ -288,7 +522,7 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     // Save Interaction if accepted
     let createdInteractionId = null;
-    const interDetails = getVal(accepted_items?.interaction?.details);
+    const interDetails = getVal(accepted_items?.interaction?.details) || resolvedMemory || inputEvent.raw_content;
     if (interDetails) {
       const interType = getVal(accepted_items?.interaction?.type) || 'Meeting';
       const interDate = getVal(accepted_items?.interaction?.date) || new Date().toISOString().split('T')[0];
@@ -330,7 +564,6 @@ router.post('/commit', requireAuth, async (req, res) => {
     }
 
     // Save Normalized Fact Provenance records with candidate_fact_id, target_type, target_id
-    const candFactId = candidate_fact_id || null;
     const provenanceEntries = [
       {
         candidate_fact_id: candFactId,
@@ -360,8 +593,8 @@ router.post('/commit', requireAuth, async (req, res) => {
 
     // Update Input Event and Candidate Fact statuses
     await connection.query(
-      `UPDATE input_events SET processing_status = 'COMMITTED' WHERE id = ? AND owner_user_id = ?`,
-      [input_event_id, userId]
+      `UPDATE input_events SET processing_status = 'COMMITTED', polished_content = COALESCE(?, polished_content) WHERE id = ? AND owner_user_id = ?`,
+      [(typeof polished_memory === 'string' && polished_memory.trim()) ? polished_memory.trim() : null, input_event_id, userId]
     );
 
     await connection.query(
@@ -384,6 +617,48 @@ router.post('/commit', requireAuth, async (req, res) => {
     connection.release();
     console.error('Error committing Tell Dossier data:', err);
     return res.status(500).json({ error: 'Failed to commit Dossier data' });
+  }
+});
+
+/**
+ * GET /api/v1/tell-dossier/contact-history/:contactId
+ * Fetches temporal history & provenance for a contact strictly scoped to authenticated owner.
+ */
+router.get('/contact-history/:contactId', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const contactId = Number(req.params.contactId);
+    if (!contactId || isNaN(contactId)) {
+      return res.status(400).json({ error: 'Invalid contact ID' });
+    }
+
+    const pool = getPool();
+    // Strictly verify contact belongs to authenticated user
+    const [cRows] = await pool.query(
+      'SELECT id, first_name, last_name, company_name FROM contacts WHERE id = ? AND owner_user_id = ? LIMIT 1',
+      [contactId, userId]
+    );
+    if (cRows.length === 0) {
+      return res.status(404).json({ error: 'Contact not found or unauthorized' });
+    }
+
+    const [historyRows] = await pool.query(
+      `SELECT ch.*, ie.raw_content AS source_raw_content, ie.capture_time, cf.candidate_type
+       FROM contact_history ch
+       LEFT JOIN input_events ie ON ie.id = ch.source_input_event_id AND ie.owner_user_id = ?
+       LEFT JOIN candidate_facts cf ON cf.id = ch.candidate_fact_id AND cf.owner_user_id = ?
+       WHERE ch.contact_id = ? AND ch.owner_user_id = ?
+       ORDER BY ch.is_current DESC, ch.valid_from DESC, ch.id DESC`,
+      [userId, userId, contactId, userId]
+    );
+
+    return res.json({
+      contact: cRows[0],
+      history: historyRows
+    });
+  } catch (err) {
+    console.error('Error fetching contact history:', err);
+    return res.status(500).json({ error: 'Failed to fetch contact history' });
   }
 });
 

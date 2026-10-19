@@ -1,11 +1,12 @@
 {
-  "version": "v0.2.0",
-  "description": "Dossier Identity Resolution Scoring & Threshold Configuration v0.2",
+  "version": "v0.2.1",
+  "description": "Dossier Identity Resolution Scoring & Threshold Configuration v0.2.1",
   "thresholds": {
     "match": 45,
     "probable_match": 25,
     "ambiguous_margin": 15,
-    "minimum_confidence": 20
+    "minimum_confidence": 20,
+    "require_anchor_for_match": true
   },
   "weights": {
     "strong_identifier": {
@@ -32,7 +33,10 @@
     },
     "negative": {
       "email_mismatch_penalty": -25,
-      "phone_mismatch_penalty": -25
+      "phone_mismatch_penalty": -25,
+      "spouse_mismatch_penalty": -30,
+      "geography_mismatch_penalty": -20,
+      "chronology_conflict_penalty": -25
     }
   }
 }
