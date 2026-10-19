@@ -12,7 +12,7 @@ const { execSync } = require('child_process');
 
 const workspaceRoot = path.resolve(__dirname, '..', '..');
 const stagingDir = path.join(workspaceRoot, 'deliverable_staging');
-const zipPath = path.join(workspaceRoot, 'kumarda-contacts-drie-v0.2.zip');
+const zipPath = path.join(workspaceRoot, 'dossier-contacts-drie-v0.2.zip');
 
 console.log('📦 Preparing clean deliverable package at:', zipPath);
 
@@ -35,7 +35,7 @@ const rootFiles = [
   'SPRINT1_COMPLETED.md',
   'SPRINT2_COMPLETED.md',
   'SPRINT2_CORRECTIONS_COMPLETED.md',
-  'kumarda_contacts.sql',
+  'dossier_contacts.sql',
   'IDENTITY_EVALUATION_REPORT.md',
   'IDENTITY_EVALUATION_REPORT.json',
   'TEMPORAL_EVALUATION_REPORT.md',

@@ -106,7 +106,7 @@ async function runDemoScenarios() {
 
   const server = app.listen(0);
 
-  const cookieName = 'kumarda_session';
+  const cookieName = 'dossier_session';
 
   try {
     // Authenticate as Kumar

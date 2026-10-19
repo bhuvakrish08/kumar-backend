@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 const { getPool } = require('../db');
 
-const COOKIE_NAME = 'kumarda_session';
+const COOKIE_NAME = 'dossier_session';
 
 function getSecret() {
   if (!process.env.SESSION_SECRET) {

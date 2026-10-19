@@ -29,7 +29,7 @@ const { execSync } = require('child_process');
 
 const workspaceRoot = path.resolve(__dirname, '..', '..');
 const stagingDir = path.join(workspaceRoot, 'sprint3a_deliverable_staging');
-const zipPath = path.join(workspaceRoot, 'kumarda-contacts-sprint-3a.zip');
+const zipPath = path.join(workspaceRoot, 'dossier-contacts-sprint-3a.zip');
 
 console.log('📦 Starting Sprint 3A Deliverable Packaging...');
 console.log(`📍 Output ZIP target: ${zipPath}\n`);
@@ -62,7 +62,7 @@ const rootFiles = [
   'SPRINT1_COMPLETED.md',
   'SPRINT2_COMPLETED.md',
   'SPRINT2_CORRECTIONS_COMPLETED.md',
-  'kumarda_contacts.sql',
+  'dossier_contacts.sql',
   'IDENTITY_EVALUATION_REPORT.md',
   'IDENTITY_EVALUATION_REPORT.json',
   'TEMPORAL_EVALUATION_REPORT.md',

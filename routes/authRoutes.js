@@ -380,7 +380,7 @@ router.post('/forgot-password', async (req, res) => {
       await sendBrevoEmail({
         to: trimmedEmail,
         name: user.username,
-        subject: `Your Kumarda Contacts Password Reset OTP: ${otp}`,
+        subject: `Your Dossier Password Reset OTP: ${otp}`,
         htmlContent: emailHtml
       });
     } catch (mailErr) {

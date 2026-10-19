@@ -84,7 +84,7 @@ async function runSecurityRegressionTests() {
   process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test-session-secret-key-1234567890';
 
   const pool = getPool();
-  const cookieName = 'kumarda_session';
+  const cookieName = 'dossier_session';
 
   // Create isolated express app
   const app = express();

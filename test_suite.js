@@ -100,7 +100,7 @@ async function runTests() {
   process.env.SESSION_SECRET = 'test-session-secret-key-1234567890';
 
   const pool = getPool();
-  const cookieName = 'kumarda_session';
+  const cookieName = 'dossier_session';
 
   // Ensure test users exist with bcrypt passwords (min 10 chars)
   const userAPass = 'Password123!';

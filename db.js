@@ -9,7 +9,7 @@ function getPool() {
       port: Number(process.env.DB_PORT || 3306),
       user: process.env.DB_USER || 'root',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'kumarda_contacts',
+      database: process.env.DB_NAME || 'dossier_contacts',
       waitForConnections: true,
       connectionLimit: 10,
       maxIdle: 10,
