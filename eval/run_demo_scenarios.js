@@ -82,7 +82,7 @@ async function runDemoScenarios() {
   console.log('🎬 Running Sprint 3A Six Mandatory Investor Demo Scenarios Suite');
   console.log('🎬 ============================================================\n');
 
-  // 1. Clean synthetic reset for demo user Kumar
+  // 1. Clean synthetic reset for dedicated demo user dossier_demo
   console.log('🔄 Step 0: Executing Clean Synthetic Demo Reset...');
   const resetResult = await resetDemoData();
   const demoUserId = resetResult.demoUserId;
@@ -109,15 +109,16 @@ async function runDemoScenarios() {
   const cookieName = 'dossier_session';
 
   try {
-    // Authenticate as Kumar
-    console.log('🔑 Authenticating demo user "kumar"...');
+    // Authenticate as dedicated synthetic demo account 'dossier_demo'
+    const demoPassword = process.env.DEMO_USER_PASSWORD || 'DemoSecurePassword2026!';
+    console.log('🔑 Authenticating synthetic demo user "dossier_demo"...');
     const loginRes = await request(server, 'POST', '/api/v1/auth/login', {}, {
-      username: 'kumar',
-      password: 'Password123!'
+      username: 'dossier_demo',
+      password: demoPassword
     });
 
     if (loginRes.statusCode !== 200) {
-      throw new Error(`Authentication failed for Kumar: ${JSON.stringify(loginRes.body)}`);
+      throw new Error(`Authentication failed for dossier_demo: ${JSON.stringify(loginRes.body)}`);
     }
 
     const sessionCookie = parseCookie(loginRes.cookies, cookieName);

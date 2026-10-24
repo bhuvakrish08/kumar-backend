@@ -278,7 +278,11 @@ router.post('/:id/interactions', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Contact not found' });
     }
 
-    const dateVal = occurred_at ? new Date(occurred_at) : new Date();
+    let dateVal = null;
+    if (occurred_at) {
+      const d = new Date(occurred_at);
+      if (!isNaN(d.getTime())) dateVal = d;
+    }
     const validFollowUpDate = follow_up_date ? new Date(follow_up_date) : null;
     const validFollowUpStatus = ['pending', 'completed', 'cancelled', 'none'].includes(follow_up_status)
       ? follow_up_status

@@ -25,7 +25,12 @@ async function runAskEvaluation() {
   const pool = getPool();
   const rootDir = path.join(__dirname, '..', '..');
 
-  const testUserId = 2; // Verified test owner Kumar
+  // Ensure dedicated isolated test user exists (never touch Kumar's account)
+  await pool.query(
+    'INSERT INTO users (username, password, email, is_demo_account) VALUES ("ask_eval_user", "$2a$10$wT0lQo.B.0zZ9qE0h/1Yp.U6nL3W7F2V9G6bK8P1X2Y3Z4a5b6c7", "ask_eval@example.com", 0) ON DUPLICATE KEY UPDATE id=id'
+  );
+  const [askUserRows] = await pool.query('SELECT id FROM users WHERE username = "ask_eval_user"');
+  const testUserId = askUserRows[0].id;
   const foreignUserId = 999999;
 
   // Setup evaluation contacts & commitments

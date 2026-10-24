@@ -133,7 +133,11 @@ router.post('/analyze', requireAuth, async (req, res) => {
       interaction: extraction.interaction ? {
         type: { value: extraction.interaction.type || 'Meeting', status: 'ADD' },
         details: { value: extraction.interaction.details || raw_content, status: 'ADD' },
-        date: { value: extraction.interaction.date || new Date().toISOString().split('T')[0], status: 'ADD' }
+        date: {
+          value: extraction.interaction.date || null,
+          raw_expression: extraction.interaction.raw_date_expression || null,
+          status: extraction.interaction.date ? 'ADD' : 'UNKNOWN'
+        }
       } : null,
       notes: { value: extraction.person.notes || raw_content, status: 'ADD' },
       sources: extraction.sources.map(s => ({ value: s, status: 'ADD' })),
@@ -525,12 +529,14 @@ router.post('/commit', requireAuth, async (req, res) => {
     const interDetails = getVal(accepted_items?.interaction?.details) || resolvedMemory || inputEvent.raw_content;
     if (interDetails) {
       const interType = getVal(accepted_items?.interaction?.type) || 'Meeting';
-      const interDate = getVal(accepted_items?.interaction?.date) || new Date().toISOString().split('T')[0];
+      const rawDateVal = getVal(accepted_items?.interaction?.date);
+      const interDate = (rawDateVal && typeof rawDateVal === 'string' && rawDateVal.trim() !== '' && !['null', 'unknown', 'undefined'].includes(rawDateVal.toLowerCase())) ? rawDateVal.trim() : null;
+      const rawTimeExpr = getVal(accepted_items?.interaction?.raw_date_expression) || getVal(accepted_items?.how_we_met?.how_we_met_notes) || null;
 
       const [iRes] = await connection.query(
-        `INSERT INTO interactions (contact_id, occurred_at, interaction_type, details, follow_up_status)
-         VALUES (?, ?, ?, ?, 'none')`,
-        [finalContactId, interDate, interType, interDetails]
+        `INSERT INTO interactions (contact_id, occurred_at, raw_time_expression, interaction_type, details, follow_up_status)
+         VALUES (?, ?, ?, ?, ?, 'none')`,
+        [finalContactId, interDate, rawTimeExpr, interType, interDetails]
       );
       createdInteractionId = iRes.insertId;
     }

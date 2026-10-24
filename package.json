@@ -12,8 +12,10 @@
     "db:init": "node init_db.js",
     "db:seed": "node seed_db.js",
     "db:reset": "node init_db.js && node seed_db.js",
+    "demo:setup": "node scripts/setup_demo_account.js",
     "demo:reset": "node scripts/demo_reset.js",
-    "demo:eval": "node eval/run_demo_scenarios.js"
+    "demo:eval": "node eval/run_demo_scenarios.js",
+    "package": "node scripts/package_sprint3a_deliverables.js"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",

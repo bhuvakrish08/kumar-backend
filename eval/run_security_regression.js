@@ -105,17 +105,22 @@ async function runSecurityRegressionTests() {
   const hashB = await bcrypt.hash(userBPass, 10);
 
   await pool.query(
-    'INSERT INTO users (id, username, password, email) VALUES (2, "kumar", ?, "kumar@example.com") ON DUPLICATE KEY UPDATE password = ?',
+    'INSERT INTO users (username, password, email, is_demo_account) VALUES ("sec_user_a", ?, "sec_user_a@example.com", 0) ON DUPLICATE KEY UPDATE password = ?',
     [hashA, hashA]
   );
   await pool.query(
-    'INSERT INTO users (id, username, password, email) VALUES (3, "testuser", ?, "testuser@example.com") ON DUPLICATE KEY UPDATE password = ?',
+    'INSERT INTO users (username, password, email, is_demo_account) VALUES ("sec_user_b", ?, "sec_user_b@example.com", 0) ON DUPLICATE KEY UPDATE password = ?',
     [hashB, hashB]
   );
 
+  const [uARows] = await pool.query('SELECT id FROM users WHERE username = "sec_user_a"');
+  const userAId = uARows[0].id;
+  const [uBRows] = await pool.query('SELECT id FROM users WHERE username = "sec_user_b"');
+  const userBId = uBRows[0].id;
+
   // Authenticate users
-  const loginA = await makeRequest(server, 'POST', '/api/v1/auth/login', {}, { username: 'kumar', password: userAPass });
-  const loginB = await makeRequest(server, 'POST', '/api/v1/auth/login', {}, { username: 'testuser', password: userBPass });
+  const loginA = await makeRequest(server, 'POST', '/api/v1/auth/login', {}, { username: 'sec_user_a', password: userAPass });
+  const loginB = await makeRequest(server, 'POST', '/api/v1/auth/login', {}, { username: 'sec_user_b', password: userBPass });
 
   const cookieA = parseCookie(loginA.cookies, cookieName);
   const cookieB = parseCookie(loginB.cookies, cookieName);
@@ -168,15 +173,16 @@ async function runSecurityRegressionTests() {
     // User A creates contact
     const [cARes] = await pool.query(
       `INSERT INTO contacts (owner_user_id, created_by, first_name, last_name, company_name, primary_phone, personal_notes)
-       VALUES (2, 2, 'Alice', 'Johnson', 'Acme Corp', '+14155551234', 'Confidential project details')`
+       VALUES (?, ?, 'Alice', 'Johnson', 'Acme Corp', '+14155551234', 'Confidential project details')`,
+      [userAId, userAId]
     );
     const contactIdA = cARes.insertId;
 
     // Insert dummy history for Alice
     await pool.query(
       `INSERT INTO contact_history (owner_user_id, contact_id, fact_type, value_payload, temporal_precision, is_current)
-       VALUES (2, ?, 'employment', ?, 'year', 1)`,
-      [contactIdA, JSON.stringify({ company_name: 'Acme Corp', previous: 'Beta Corp' })]
+       VALUES (?, ?, 'employment', ?, 'year', 1)`,
+      [userAId, contactIdA, JSON.stringify({ company_name: 'Acme Corp', previous: 'Beta Corp' })]
     );
 
     // Setup User B Data
@@ -280,14 +286,15 @@ async function runSecurityRegressionTests() {
     // Create an input event and candidate fact with conflict_state = 'CONFLICT'
     const [confEvRes] = await pool.query(
       `INSERT INTO input_events (owner_user_id, input_type, raw_content, capture_time, processing_status, parser_version)
-       VALUES (2, 'text', 'Conflicting identity test', NOW(), 'ANALYZED', '0.2.0')`
+       VALUES (?, 'text', 'Conflicting identity test', NOW(), 'ANALYZED', '0.2.0')`,
+      [userAId]
     );
     const confEventId = confEvRes.insertId;
 
     const [confFactRes] = await pool.query(
       `INSERT INTO candidate_facts (owner_user_id, input_event_id, candidate_type, structured_payload, confidence, status, conflict_state)
-       VALUES (2, ?, 'tell_dossier_extraction', '{}', 0.50, 'PENDING', 'CONFLICT')`,
-      [confEventId]
+       VALUES (?, ?, 'tell_dossier_extraction', '{}', 0.50, 'PENDING', 'CONFLICT')`,
+      [userAId, confEventId]
     );
     const confFactId = confFactRes.insertId;
 
@@ -346,22 +353,23 @@ async function runSecurityRegressionTests() {
     // Insert an input event specifically for rollback testing
     const [rbEvRes] = await pool.query(
       `INSERT INTO input_events (owner_user_id, input_type, raw_content, capture_time, processing_status, parser_version)
-       VALUES (2, 'text', 'Rollback verification input', NOW(), 'PROCESSING', '0.2.0')`
+       VALUES (?, 'text', 'Rollback verification input', NOW(), 'PROCESSING', '0.2.0')`,
+      [userAId]
     );
     const rbEventId = rbEvRes.insertId;
 
     const [rbFactRes] = await pool.query(
       `INSERT INTO candidate_facts (owner_user_id, input_event_id, candidate_type, structured_payload, confidence, status, conflict_state)
-       VALUES (2, ?, 'tell_dossier_extraction', '{}', 0.90, 'PENDING', 'NONE')`,
-      [rbEventId]
+       VALUES (?, ?, 'tell_dossier_extraction', '{}', 0.90, 'PENDING', 'NONE')`,
+      [userAId, rbEventId]
     );
     const rbFactId = rbFactRes.insertId;
 
     // Send payload that fails inside the transaction: invalid contact_id reference or bad payload
-    const initialContactCount = (await pool.query('SELECT COUNT(*) as count FROM contacts WHERE owner_user_id = 2'))[0][0].count;
-    const initialProvCount = (await pool.query('SELECT COUNT(*) as count FROM fact_provenance WHERE owner_user_id = 2'))[0][0].count;
+    const initialContactCount = (await pool.query('SELECT COUNT(*) as count FROM contacts WHERE owner_user_id = ?', [userAId]))[0][0].count;
+    const initialProvCount = (await pool.query('SELECT COUNT(*) as count FROM fact_provenance WHERE owner_user_id = ?', [userAId]))[0][0].count;
 
-    // Attempt commit with existing person but nonexistent contact ID inside User 2's realm
+    // Attempt commit with existing person but nonexistent contact ID inside User A's realm
     const badCommit = await makeRequest(server, 'POST', '/api/v1/tell-dossier/commit', headersA, {
       input_event_id: rbEventId,
       candidate_fact_id: rbFactId,
@@ -370,8 +378,8 @@ async function runSecurityRegressionTests() {
       accepted_items: {}
     });
 
-    const postContactCount = (await pool.query('SELECT COUNT(*) as count FROM contacts WHERE owner_user_id = 2'))[0][0].count;
-    const postProvCount = (await pool.query('SELECT COUNT(*) as count FROM fact_provenance WHERE owner_user_id = 2'))[0][0].count;
+    const postContactCount = (await pool.query('SELECT COUNT(*) as count FROM contacts WHERE owner_user_id = ?', [userAId]))[0][0].count;
+    const postProvCount = (await pool.query('SELECT COUNT(*) as count FROM fact_provenance WHERE owner_user_id = ?', [userAId]))[0][0].count;
     const [rbEvCheck] = await pool.query('SELECT processing_status FROM input_events WHERE id = ?', [rbEventId]);
 
     const rollbackClean = (initialContactCount === postContactCount) &&

@@ -513,8 +513,44 @@ async function migrate() {
       console.log('input_events.polished_content already exists.');
     }
 
+    // 15. Migration 006: Add is_demo_account to users, make interactions.occurred_at nullable, add raw_time_expression
+    console.log('Checking Migration 006 (Sprint 3A.1 Demo Account Isolation & Unknown Date Handling)...');
+    const [demoCols] = await pool.query("SHOW COLUMNS FROM users LIKE 'is_demo_account'");
+    if (demoCols.length === 0) {
+      await pool.query("ALTER TABLE users ADD COLUMN is_demo_account BOOLEAN NOT NULL DEFAULT FALSE");
+      console.log('Added users.is_demo_account column (default FALSE).');
+    } else {
+      console.log('users.is_demo_account already exists.');
+    }
+
+    try {
+      const [idxRows] = await pool.query("SHOW INDEX FROM users WHERE Key_name = 'idx_users_is_demo'");
+      if (idxRows.length === 0) {
+        await pool.query("CREATE INDEX idx_users_is_demo ON users (is_demo_account)");
+        console.log('Created index idx_users_is_demo on users (is_demo_account).');
+      }
+    } catch (idxErr) {
+      console.log('Note on idx_users_is_demo:', idxErr.message);
+    }
+
+    const [interCols] = await pool.query("SHOW COLUMNS FROM interactions LIKE 'occurred_at'");
+    if (interCols.length > 0 && interCols[0].Null === 'NO') {
+      await pool.query("ALTER TABLE interactions MODIFY COLUMN occurred_at DATETIME DEFAULT NULL");
+      console.log('Modified interactions.occurred_at to allow NULL for unknown/approximate dates.');
+    } else {
+      console.log('interactions.occurred_at already allows NULL.');
+    }
+
+    const [rawTimeCols] = await pool.query("SHOW COLUMNS FROM interactions LIKE 'raw_time_expression'");
+    if (rawTimeCols.length === 0) {
+      await pool.query("ALTER TABLE interactions ADD COLUMN raw_time_expression VARCHAR(255) DEFAULT NULL AFTER occurred_at");
+      console.log('Added interactions.raw_time_expression column.');
+    } else {
+      console.log('interactions.raw_time_expression already exists.');
+    }
+
   } catch (e) {
-    console.error('Error executing Migration 004/005:', e.message);
+    console.error('Error executing Migration 004/005/006:', e.message);
   }
 
   console.log('Migration finished successfully!');

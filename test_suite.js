@@ -1,4 +1,5 @@
 require('dotenv').config();
+process.env.AI_PROVIDER = 'rule-engine';
 const http = require('http');
 const express = require('express');
 const { getPool } = require('./db');
@@ -28,6 +29,7 @@ const { runSecurityRegressionTests } = require('./eval/run_security_regression')
 const { runPerformanceBenchmark } = require('./eval/run_performance_test');
 const { runDemoScenarios } = require('./eval/run_demo_scenarios');
 const { verifyMigrations } = require('./scripts/verify_migrations');
+const { runSprint3A1SecurityEval } = require('./eval/run_sprint3a1_security_eval');
 
 // Create test application
 const app = express();
@@ -98,24 +100,30 @@ async function runTests() {
 
   // Set test SESSION_SECRET
   process.env.SESSION_SECRET = 'test-session-secret-key-1234567890';
+  process.env.AI_PROVIDER = process.env.AI_PROVIDER || 'rule-engine';
 
   const pool = getPool();
   const cookieName = 'dossier_session';
 
-  // Ensure test users exist with bcrypt passwords (min 10 chars)
-  const userAPass = 'Password123!';
-  const userBPass = 'Password456!';
+  // Ensure isolated test users exist with bcrypt passwords (min 10 chars)
+  const userAPass = 'TestSuiteSecPass1!';
+  const userBPass = 'TestSuiteSecPass2!';
   const hashA = await bcrypt.hash(userAPass, 10);
   const hashB = await bcrypt.hash(userBPass, 10);
 
   await pool.query(
-    'INSERT INTO users (id, username, password, email) VALUES (2, "kumar", ?, "kumar@example.com") ON DUPLICATE KEY UPDATE password = ?',
+    'INSERT INTO users (username, password, email, is_demo_account) VALUES ("test_suite_user_a", ?, "ts_user_a@example.com", FALSE) ON DUPLICATE KEY UPDATE password = ?',
     [hashA, hashA]
   );
   await pool.query(
-    'INSERT INTO users (id, username, password, email) VALUES (3, "testuser", ?, "testuser@example.com") ON DUPLICATE KEY UPDATE password = ?',
+    'INSERT INTO users (username, password, email, is_demo_account) VALUES ("test_suite_user_b", ?, "ts_user_b@example.com", FALSE) ON DUPLICATE KEY UPDATE password = ?',
     [hashB, hashB]
   );
+
+  const [[userARow]] = await pool.query('SELECT id FROM users WHERE username = "test_suite_user_a"');
+  const [[userBRow]] = await pool.query('SELECT id FROM users WHERE username = "test_suite_user_b"');
+  const userAId = userARow.id;
+  const userBId = userBRow.id;
 
   const server = app.listen(0);
 
@@ -143,7 +151,7 @@ async function runTests() {
     const uniqueUser = `reguser_${Date.now()}`;
     const regRes = await request(server, 'POST', '/api/v1/auth/register', {}, {
       username: uniqueUser,
-      password: 'ValidPassword123!',
+      password: 'ValidTestRegPass1!',
       email: `${uniqueUser}@example.com`,
       mobile_no: '9999999999'
     });
@@ -157,9 +165,9 @@ async function runTests() {
     // ---------------------------------------------------------------
     // TEST 3: Authenticate User A and User B
     // ---------------------------------------------------------------
-    console.log('3️⃣ Testing Authentication for User A (kumar) & User B (testuser)...');
-    const loginA = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'kumar', password: userAPass });
-    const loginB = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'testuser', password: userBPass });
+    console.log('3️⃣ Testing Authentication for User A (test_suite_user_a) & User B (test_suite_user_b)...');
+    const loginA = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'test_suite_user_a', password: userAPass });
+    const loginB = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'test_suite_user_b', password: userBPass });
 
     const cookieA = parseCookie(loginA.cookies, cookieName);
     const cookieB = parseCookie(loginB.cookies, cookieName);
@@ -182,7 +190,7 @@ async function runTests() {
     // TEST 5: Plaintext Password Rejection (Bcrypt Only)
     // ---------------------------------------------------------------
     console.log('5️⃣ Testing Plaintext Password Rejection (Bcrypt Only)...');
-    const badLogin = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'kumar', password: 'wrongpassword' });
+    const badLogin = await request(server, 'POST', '/api/v1/auth/login', {}, { username: 'test_suite_user_a', password: 'wrongpassword' });
     if (badLogin.statusCode !== 401) throw new Error('Server allowed login with incorrect plaintext password!');
     console.log('   ✅ Plaintext / invalid passwords rejected.');
 
@@ -190,7 +198,7 @@ async function runTests() {
     // TEST 6: User A Contact & Dossier Data Creation
     // ---------------------------------------------------------------
     console.log('6️⃣ Testing User A Contact Creation...');
-    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name = "David"');
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = ? AND first_name = "David"', [userAId]);
     const c1Res = await request(server, 'POST', '/api/v1/contacts', headersA, {
       first_name: 'David',
       last_name: 'Miller',
@@ -230,15 +238,15 @@ async function runTests() {
     if (analyzeRes.statusCode !== 200) throw new Error(`Tell Dossier analyze failed: ${JSON.stringify(analyzeRes.body)}`);
     const inputEventId = analyzeRes.body.input_event_id;
 
-    const [eventRows] = await pool.query('SELECT * FROM input_events WHERE id = ? AND owner_user_id = 2', [inputEventId]);
+    const [eventRows] = await pool.query('SELECT * FROM input_events WHERE id = ? AND owner_user_id = ?', [inputEventId, userAId]);
     if (eventRows.length === 0 || eventRows[0].raw_content !== rawInput) {
       throw new Error('Input Event did not preserve raw input text exactly!');
     }
 
-    const [factRows] = await pool.query('SELECT * FROM candidate_facts WHERE input_event_id = ? AND owner_user_id = 2', [inputEventId]);
+    const [factRows] = await pool.query('SELECT * FROM candidate_facts WHERE input_event_id = ? AND owner_user_id = ?', [inputEventId, userAId]);
     if (factRows.length === 0) throw new Error('Candidate fact row was not created!');
 
-    const [prematureCheck] = await pool.query('SELECT id FROM contacts WHERE first_name = ? AND owner_user_id = 2', [uniquePersonName]);
+    const [prematureCheck] = await pool.query('SELECT id FROM contacts WHERE first_name = ? AND owner_user_id = ?', [uniquePersonName, userAId]);
     if (prematureCheck.length > 0) throw new Error('Violation: Authoritative contact data was modified BEFORE user review commit!');
 
     console.log('   ✅ Tell Dossier created owner-scoped Input Event & Candidate Facts without premature authoritative DB writes.');
@@ -300,13 +308,13 @@ async function runTests() {
     }
 
     const createdRahulId = commitRes.body.contact_id;
-    const [cCheck] = await pool.query('SELECT * FROM contacts WHERE id = ? AND owner_user_id = 2', [createdRahulId]);
+    const [cCheck] = await pool.query('SELECT * FROM contacts WHERE id = ? AND owner_user_id = ?', [createdRahulId, userAId]);
     if (cCheck.length === 0) throw new Error('Committed contact not found in database!');
 
-    const [comCheck] = await pool.query('SELECT * FROM commitments WHERE source_input_event_id = ? AND owner_user_id = 2', [inputEventId]);
+    const [comCheck] = await pool.query('SELECT * FROM commitments WHERE source_input_event_id = ? AND owner_user_id = ?', [inputEventId, userAId]);
     if (comCheck.length === 0) throw new Error('Commitments were not linked to input event!');
 
-    const [provCheck] = await pool.query('SELECT * FROM fact_provenance WHERE input_event_id = ? AND owner_user_id = 2', [inputEventId]);
+    const [provCheck] = await pool.query('SELECT * FROM fact_provenance WHERE input_event_id = ? AND owner_user_id = ?', [inputEventId, userAId]);
     if (provCheck.length === 0 || provCheck[0].target_type !== 'contact') {
       throw new Error('Fact provenance trail was not recorded cleanly!');
     }
@@ -332,21 +340,23 @@ async function runTests() {
     // TEST 13: Ask Dossier Canonical Natural Language Queries
     // ---------------------------------------------------------------
     console.log('1️⃣3️⃣ Testing Ask Dossier Canonical Natural Language Queries...');
-    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name = "David" AND id != ?', [contactIdA]);
-    await pool.query('DELETE FROM contacts WHERE owner_user_id = 2 AND first_name IN ("John", "Larry", "Rahul")');
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = ? AND first_name = "David" AND id != ?', [userAId, contactIdA]);
+    await pool.query('DELETE FROM contacts WHERE owner_user_id = ? AND first_name IN ("John", "Larry", "Rahul")', [userAId]);
     await pool.query(
       `INSERT INTO contacts (owner_user_id, created_by, first_name, last_name, company_name, primary_phone, introduced_by_name, personal_notes)
-       VALUES (2, 2, 'John', 'Doe', 'Consulting Co', '5550001111', 'Sarah Jenkins', 'Met at tech summit'),
-              (2, 2, 'Larry', 'Ellison', 'IBM', '5552223333', 'Direct', 'Enjoys fine single malt whisky')`
+       VALUES (?, ?, 'John', 'Doe', 'Consulting Co', '5550001111', 'Sarah Jenkins', 'Met at tech summit'),
+              (?, ?, 'Larry', 'Ellison', 'IBM', '5552223333', 'Direct', 'Enjoys fine single malt whisky')`,
+      [userAId, userAId, userAId, userAId]
     );
     const [rRes] = await pool.query(
       `INSERT INTO contacts (owner_user_id, created_by, first_name, last_name, company_name)
-       VALUES (2, 2, 'Rahul', 'Sharma', 'ABC Corp')`
+       VALUES (?, ?, 'Rahul', 'Sharma', 'ABC Corp')`,
+      [userAId, userAId]
     );
     await pool.query(
       `INSERT INTO commitments (owner_user_id, contact_id, title, details, status, type)
-       VALUES (2, ?, 'Send updated pricing schedule', 'Rahul is expected to provide Q4 pricing quote', 'OPEN', 'expected_item')`,
-      [rRes.insertId]
+       VALUES (?, ?, 'Send updated pricing schedule', 'Rahul is expected to provide Q4 pricing quote', 'OPEN', 'expected_item')`,
+      [userAId, rRes.insertId]
     );
 
     const q1 = await request(server, 'POST', '/api/v1/ask-dossier', headersA, { query: "What is David's cell?" });
@@ -587,7 +597,17 @@ async function runTests() {
     await runDemoScenarios();
     console.log('   ✅ Sprint 3A Six Mandatory Investor Demo Scenarios Suite passed with 100% pass rate.');
 
-    console.log('\n🎉 ALL 24 TEST STAGES, SPRINT 3A SCENARIOS, SECURITY SUITES, EVALUATIONS, AND BENCHMARKS PASSED SUCCESSFULLY (100% PASS)! 🎉\n');
+    // ---------------------------------------------------------------
+    // TEST 25: Sprint 3A.1 Security & Demo Reset Safety Suite (14 Tests)
+    // ---------------------------------------------------------------
+    console.log('\n2️⃣5️⃣ Running Sprint 3A.1 Security & Demo Reset Safety Suite (14 Tests)...');
+    const s3a1Report = await runSprint3A1SecurityEval();
+    if (s3a1Report.summary.pass_rate_percent < 100.0) {
+      throw new Error(`Sprint 3A.1 Security Suite did not achieve 100% pass rate! Achieved: ${s3a1Report.summary.pass_rate_percent}%`);
+    }
+    console.log('   ✅ Sprint 3A.1 Security & Demo Reset Safety Suite passed 100% across all 14 tests.');
+
+    console.log('\n🎉 ALL 25 TEST STAGES, SPRINT 3A SCENARIOS, SECURITY SUITES, EVALUATIONS, AND BENCHMARKS PASSED SUCCESSFULLY (100% PASS)! 🎉\n');
     process.exit(0);
   } finally {
     server.close();

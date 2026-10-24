@@ -68,9 +68,14 @@ async function verifyMigrations() {
   console.log('\n5️⃣ Checking Migration 005 (Polished Natural-Language Memory Capture)...');
   await checkColumn('input_events', 'polished_content', 'Preserved polished natural-language memory');
 
+  console.log('\n6️⃣ Checking Migration 006 (Demo Account Isolation & Unknown Date Handling)...');
+  await checkColumn('users', 'is_demo_account', 'Account classification flag for demo reset isolation');
+  await checkIndex('users', 'idx_users_is_demo', 'Index on users.is_demo_account');
+  await checkColumn('interactions', 'raw_time_expression', 'Preserved raw temporal expression for interactions');
+
   console.log('\n📊 Migration Smoke Test Summary:');
   if (errors === 0) {
-    console.log('🎉 ALL MIGRATION CHECKS PASSED (001 -> 002 -> 003 -> 004 -> 005 Verified)!');
+    console.log('🎉 ALL MIGRATION CHECKS PASSED (001 -> 002 -> 003 -> 004 -> 005 -> 006 Verified)!');
     return true;
   } else {
     console.error(`❌ Migration verification encountered ${errors} error(s)!`);

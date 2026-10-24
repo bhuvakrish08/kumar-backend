@@ -54,7 +54,7 @@ router.put('/:id', requireAuth, async (req, res) => {
       if (!isNaN(d.getTime())) validFollowUpDate = d;
     }
 
-    let validOccurredAt = new Date();
+    let validOccurredAt = null;
     if (occurred_at) {
       const d = new Date(occurred_at);
       if (!isNaN(d.getTime())) validOccurredAt = d;
